@@ -1,507 +1,287 @@
-# %%
-'''
-Multi-processing for PPO continuous version 2
+#https://github.com/nikhilbarhate99/PPO-PyTorch/blob/master/PPO_colab.ipynb
 
-Several tricks need to be careful in multiprocess PPO:
-
-* As PPO takes online training, the buffer contains sequential samples from rollouts,
-so the buffer CANNOT be shared across processes, the sequece orders will be disturbed 
-if the buffer is feeding with samples from different processes at the same time. Each process
-can main its own buffer.
-
-* A larger batch size usually ensures the stable training of PPO, also the update steps 
-for both actor and critic need to be large if the training batch is large, because the agent
-is learning from more samples in this case, which requires more training for each batch.
-
-* Reward normalization can be critical. It could have significant effects for environments like
-LunarLanderContinuous-v2, etc.
-
-* The std of the action from the actor usually does no depend on the input state, which follows 
-openai baseline implementation and other high-starred repository. 
-
-* The optimization methods of 'kl_penal' and 'clip' are usually task-specific and empiracle
-
-'''
-
-
-import math
-import random
-
-import gym
-import numpy as np
+import os
+import glob
+import time
+from datetime import datetime
 
 import torch
-torch.multiprocessing.set_start_method('forkserver', force=True) # critical for make multiprocessing work
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-from torch.distributions import Normal, MultivariateNormal
-
-from IPython.display import clear_output
-import matplotlib.pyplot as plt
-from matplotlib import animation
-from IPython.display import display
-# from reacher import Reacher
-
-import argparse
-import time
-
-import torch.multiprocessing as mp
-from torch.multiprocessing import Process
-
-from multiprocessing import Process, Manager
-from multiprocessing.managers import BaseManager
-
-import threading as td
+import numpy as np
 from air_hockey_challenge.framework.air_hockey_challenge_wrapper import AirHockeyChallengeWrapper
 from air_hockey_agent.agent_builder import build_agent
-from air_hockey_challenge.framework.agent_base import AgentBase
 
-# %%
+from air_hockey_challenge.framework.air_hockey_challenge_wrapper import AirHockeyChallengeWrapper
+from air_hockey_agent.agent_builder import build_agent
 
-GPU = True
-device_idx = 0
-if GPU:
-    device = torch.device("cuda:" + str(device_idx) if torch.cuda.is_available() else "cpu")
-else:
-    device = torch.device("cpu")
-print(device)
+def cust_rewards(policy,state,done):
+    reward = 0
+    ee_pos = policy.get_ee_pose(state)[0]                               
+    puck_pos = policy.get_puck_pos(state)
+    dist = np.linalg.norm(ee_pos-puck_pos)
+    # reward += np.exp(-dist)*10
+    reward+=policy.get_puck_vel(state)[0]*100 *(dist<0.16)
+    # reward -= episode_timesteps*0.1
+    # if policy.get_puck_vel(state)[0]>0.06 and ((dist>0.16)):
+        # reward=0
+    reward+=done*1000
 
-
-
-# %%
-
-parser = argparse.ArgumentParser(description='Train or test neural net motor controller.')
-parser.add_argument('--train', dest='train', action='store_true', default=True)
-parser.add_argument('--test', dest='test', action='store_true', default=False)
-
-# args = parser.parse_args()
-args, unknown = parser.parse_known_args()
-
-#####################  hyper parameters  ####################
-
-ENV_NAME = 'air-hockey'  # environment name: LunarLander-v2, Pendulum-v0
-
-RANDOMSEED = 2  # random seed
-
-EP_MAX = 1000  # total number of episodes for training
-EP_LEN = 1000  # total number of steps for each episode
-GAMMA = 0.99  # reward discount
-A_LR = 0.0001  # learning rate for actor
-C_LR = 0.0002  # learning rate for critic
-BATCH = 4096  # update batchsize, can be larger than episode length; important for stabilize training
-A_UPDATE_STEPS = 50  # actor update steps
-C_UPDATE_STEPS = 50  # critic update steps
-HIDDEN_DIM = 64
-EPS = 1e-8  # numerical residual
-MODEL_PATH = 'model/ppo_multi'
-NUM_WORKERS=1  # or: mp.cpu_count()
-ACTION_RANGE = 1.  # normalized action range should be 1.
-METHOD = [
-    dict(name='kl_pen', kl_target=0.01, lam=0.5),  # KL penalty
-    dict(name='clip', epsilon=0.2),  # Clipped surrogate objective
-][0]  # choose the method for optimization, it's usually task specific
-
-
-# %%
-
-###############################  PPO  ####################################
-class AddBias(nn.Module):
-    def __init__(self, bias):
-        super(AddBias, self).__init__()
-        self._bias = nn.Parameter(bias.unsqueeze(1))
-
-    def forward(self, x):
-        if x.dim() == 2:
-            bias = self._bias.t().view(1, -1)
-        else:
-            bias = self._bias.t().view(1, -1, 1, 1)
-
-        return x + bias
-
-
-class ValueNetwork(nn.Module):
-    def __init__(self, state_dim, hidden_dim, init_w=3e-3):
-        super(ValueNetwork, self).__init__()
-        
-        self.linear1 = nn.Linear(state_dim, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, hidden_dim)
-        # self.linear3 = nn.Linear(hidden_dim, hidden_dim)
-        self.linear4 = nn.Linear(hidden_dim, 1)
-
-        
-    def forward(self, state):
-        x = F.tanh(self.linear1(state))
-        x = F.tanh(self.linear2(x))
-        # x = F.relu(self.linear3(x))
-        x = self.linear4(x)
-        return x
-        
-class PolicyNetwork(nn.Module):
-    def __init__(self, num_inputs, num_actions, hidden_dim, action_range=1., init_w=3e-3, log_std_min=-20, log_std_max=2):
-        super(PolicyNetwork, self).__init__()
-        
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
-        
-        self.linear1 = nn.Linear(num_inputs, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, hidden_dim)
-        self.linear3 = nn.Linear(hidden_dim, hidden_dim)
-        # self.linear4 = nn.Linear(hidden_dim, hidden_dim)
-
-        self.mean_linear = nn.Linear(hidden_dim, num_actions)
-
-        
-        # self.log_std_linear = nn.Linear(hidden_dim, num_actions)
-        self.log_std = AddBias(torch.zeros(num_actions))  
-
-        self.num_actions = num_actions
-        self.action_range = action_range
-
-        
-    def forward(self, state):
-        x = F.tanh(self.linear1(state))
-        x = F.tanh(self.linear2(x))
-        x = F.tanh(self.linear3(x))
-        # x = F.relu(self.linear4(x))
-
-        mean    = self.action_range * F.tanh(self.mean_linear(x))
-        
-        # log_std = self.log_std_linear(x)
-        # log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
-
-        zeros = torch.zeros(mean.size())
-        if state.is_cuda:
-            zeros = zeros.cuda()
-        log_std = self.log_std(zeros)
-
-        std = log_std.exp()
-        return mean, std
-        
-    def get_action(self, state, deterministic=False):
-        state = torch.FloatTensor(state).unsqueeze(0).to(device)
-        mean, std = self.forward(state)
-        if deterministic:
-            action = mean
-        else:
-            pi = torch.distributions.Normal(mean, std)
-            action = pi.sample()
-        action = torch.clamp(action, -self.action_range, self.action_range)
-        return action.squeeze(0)
-
-    def sample_action(self,):
-        a=torch.FloatTensor(self.num_actions).uniform_(-1, 1)
-        return a.numpy()
-
-class NormalizedActions(gym.ActionWrapper):
-    def _action(self, action):
-        low  = self.action_space.low
-        high = self.action_space.high
-        
-        action = low + (action + 1.0) * 0.5 * (high - low)
-        action = np.clip(action, low, high)
-        
-        return action
-
-    def _reverse_action(self, action):
-        low  = self.action_space.low
-        high = self.action_space.high
-        
-        action = 2 * (action - low) / (high - low) - 1
-        action = np.clip(action, low, high)
-        
-        return action
-        
-
-
-# %%
-class PPO(AgentBase):
-    '''
-    PPO class
-    '''
-    def __init__(self,env_info,agent_id, state_dim, action_dim, hidden_dim=128, a_lr=3e-4, c_lr=3e-4):
-        super(PPO, self).__init__(env_info, agent_id=1)
-        self.actor = PolicyNetwork(state_dim, action_dim, hidden_dim, ACTION_RANGE).to(device)
-        self.critic = ValueNetwork(state_dim, hidden_dim).to(device)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=A_LR)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=C_LR)
-        print(self.actor, self.critic)
-
-    def a_train(self, s, a, adv, oldpi):
-        '''
-        Update policy network
-        :param state: state batch
-        :param action: action batch
-        :param adv: advantage batch
-        :param old_pi: old pi distribution
-        :return:
-        '''  
-        mu, std = self.actor(s)
-        pi = Normal(mu, std)
-        adv = adv.detach()  # this is critical, may not work without this line
-        # ratio = torch.exp(pi.log_prob(a) - oldpi.log_prob(a))  # sometimes give nan
-        ratio = torch.exp(pi.log_prob(a)) / (torch.exp(oldpi.log_prob(a)) + EPS)
-        surr = ratio * adv
-
-        if METHOD['name'] == 'kl_pen':
-            lam = METHOD['lam']
-            kl = torch.distributions.kl.kl_divergence(oldpi, pi)
-            kl_mean = kl.mean()
-            aloss = -((surr - lam * kl).mean())
-        else:  # clipping method, find this is better
-            aloss = -torch.mean(torch.min(surr, torch.clamp(ratio, 1. - METHOD['epsilon'], 1. + METHOD['epsilon']) * adv))
-        self.actor_optimizer.zero_grad()
-        aloss.backward()
-        self.actor_optimizer.step()
-
-        if METHOD['name'] == 'kl_pen':
-            return kl_mean
-
-    def c_train(self, cumulative_r, s):
-        '''
-        Update actor network
-        :param cumulative_r: cumulative reward
-        :param s: state
-        :return: None
-        '''
-        v = self.critic(s)
-        advantage = cumulative_r - v
-        closs = (advantage**2).mean()
-        self.critic_optimizer.zero_grad()
-        closs.backward()
-        self.critic_optimizer.step()
-
-    def update(self, s, a, r):
-        '''
-        Update parameter with the constraint of KL divergent
-        :return: None
-        '''
-        s = torch.Tensor(s).to(device)
-        a = torch.Tensor(a).to(device)
-        r = torch.Tensor(r).to(device)
-        r = (r - r.mean()) / (r.std() + 1e-5)  # normalization, can be critical
-        with torch.no_grad():
-            mean, std = self.actor(s)
-            pi = torch.distributions.Normal(mean, std)
-            adv = r - self.critic(s)
-        # adv = (adv - adv.mean())/(adv.std()+1e-6)  #  choose reward normalizaiton above or advantage normalization here
-
-        # update actor
-        if METHOD['name'] == 'kl_pen':
-            for _ in range(A_UPDATE_STEPS):
-                kl = self.a_train(s, a, adv, pi)
-                if kl > 4 * METHOD['kl_target']:  # this in in google's paper
-                    break
-            if kl < METHOD['kl_target'] / 1.5:  # adaptive lambda, this is in OpenAI's paper
-                METHOD['lam'] /= 2
-            elif kl > METHOD['kl_target'] * 1.5:
-                METHOD['lam'] *= 2
-            METHOD['lam'] = np.clip(
-                METHOD['lam'], 1e-4, 10
-            )  # sometimes explode, this clipping is MorvanZhou's solution
-        else:  # clipping method, find this is better (OpenAI's paper)
-            for _ in range(A_UPDATE_STEPS):
-                self.a_train(s, a, adv, pi)
-
-        # update critic
-        for _ in range(C_UPDATE_STEPS):
-            self.c_train(r, s) 
-
-    def draw_action(self, s, deterministic=False):
-        '''
-        Choose action
-        :param s: state
-        :return: clipped act
-        '''
-        a = self.actor.get_action(s, deterministic)
-        return a.detach().cpu().numpy()
+    reward =-10 if abs(policy.get_ee_pose(state)[0][1])>0.5 else reward
+    reward =-10 if abs(policy.get_ee_pose(state)[0][0])<0.536 else reward
     
-    def get_v(self, s):
-        '''
-        Compute value
-        :param s: state
-        :return: value
-        '''
-        s = s.astype(np.float32)
-        if s.ndim < 2: s = s[np.newaxis, :]
-        s = torch.FloatTensor(s).to(device)  
-        return self.critic(s).squeeze(0).detach().cpu().numpy()
+    # print (reward)
 
-    def save_model(self, path):
-        torch.save(self.actor.state_dict(), path+'_actor')
-        torch.save(self.critic.state_dict(), path+'_critic')
+    return reward
+################################### Training ###################################
+def train():
+    print("============================================================================================")
 
-    def load_model(self, path):
-        self.actor.load_state_dict(torch.load(path+'_actor'))
-        self.critic.load_state_dict(torch.load(path+'_critic'))
+    ####### initialize environment hyperparameters ######
+    env_name = "air-hockey-hit"
 
-        self.actor.eval()
-        self.critic.eval()
+    has_continuous_action_space = True  # continuous action space; else discrete
+
+    max_ep_len = 100                   # max timesteps in one episode
+    max_training_timesteps = int(3e6)   # break training loop if timeteps > max_training_timesteps
+
+    print_freq = max_ep_len * 2        # print avg reward in the interval (in num timesteps)
+    log_freq = max_ep_len * 2           # log avg reward in the interval (in num timesteps)
+    save_model_freq = int(1e4)          # save model frequency (in num timesteps)
+
+    action_std = 0.6                    # starting std for action distribution (Multivariate Normal)
+    action_std_decay_rate = 0.05        # linearly decay action_std (action_std = action_std - action_std_decay_rate)
+    min_action_std = 0.1                # minimum action_std (stop decay after action_std <= min_action_std)
+    action_std_decay_freq = int(2.5e5)  # action_std decay frequency (in num timesteps)
+    #####################################################
+
+    ## Note : print/log frequencies should be > than max_ep_len
+
+    ################ PPO hyperparameters ################
+    update_timestep = max_ep_len * 10      # update policy every n timesteps
+    # K_epochs = 80               # update policy for K epochs in one PPO update
+    K_epochs = 256
+    eps_clip = 0.2          # clip parameter for PPO
+    gamma = 0.99            # discount factor
+
+    lr_actor = 0.0003       # learning rate for actor network
+    lr_critic = 0.001       # learning rate for critic network
+
+    random_seed = 0         # set random seed if required (0 = no random seed)
+    #####################################################
+
+    print("training environment name : " + env_name)
+
+    # env = gym.make(env_name)  
+    env = AirHockeyChallengeWrapper(env="3dof-hit", action_type="position-velocity", interpolation_order=3, debug=False)
     
-    def reset(self):
-        pass
-
-def ShareParameters(adamoptim):
-    ''' share parameters of Adamoptimizers for multiprocessing '''
-    for group in adamoptim.param_groups:
-        for p in group['params']:
-            state = adamoptim.state[p]
-            # initialize: have to initialize here, or else cannot find
-            state['step'] = 0
-            state['exp_avg'] = torch.zeros_like(p.data)
-            state['exp_avg_sq'] = torch.zeros_like(p.data)
-
-            # share in memory
-            state['exp_avg'].share_memory_()
-            state['exp_avg_sq'].share_memory_()
-
-
-def plot(rewards):
-    clear_output(True)
-    plt.figure(figsize=(10,5))
-    plt.plot(rewards)
-    plt.savefig('ppo_multi.png')
-    # plt.show()
-    plt.clf()
-    plt.close()
-
-def worker(id, ppo, rewards_queue):
-    env = gym.make(ENV_NAME)
+    # state space dimension
+    # state_dim = env.observation_space.shape[0]
     state_dim = 12
-    action_dim = 6
-    total_t = 0
-    buffer_s, buffer_a, buffer_r, buffer_d = [], [], [], []
+    # action space dimension
+    if has_continuous_action_space:
+        # action_dim = env.action_space.shape[0]
+        action_dim = 6
+    else:
+        action_dim = env.action_space.n
 
-    for ep in range(EP_MAX):
-        s = env.reset()
-        ep_r = 0
-        t0 = time.time()
-        for t in range(EP_LEN):  # in one episode
-            # env.render()
-            total_t += 1
-            a = ppo.draw_action(s)
-            s_, r, done, _ = env.step(a)
-            buffer_s.append(s)
-            buffer_a.append(a)
-            buffer_r.append(r)
-            buffer_d.append(done)
-            s = s_
-            ep_r += r
+    ###################### logging ######################
 
-            # update ppo
-            # if (t+1) % BATCH == 0 or t == EP_LEN - 1 or done:  # update once done
-            if (total_t+1) % BATCH == 0:
-                if done:
-                    v_s_ = 0
-                else:
-                    v_s_ = ppo.critic(torch.Tensor(np.array([s_])).to(device)).cpu().detach().numpy()[0, 0]
-                discounted_r = []
-                for r, d in zip(buffer_r[::-1], buffer_d[::-1]):
-                    v_s_ = r + GAMMA * v_s_ * (1-d)
-                    discounted_r.append(v_s_)
-                discounted_r.reverse()
-                bs = buffer_s if len(buffer_s[0].shape)>1 else np.vstack(buffer_s) # no vstack for raw-pixel input
-                ba, br = np.vstack(buffer_a), np.array(discounted_r)[:, np.newaxis]
-                buffer_s, buffer_a, buffer_r, buffer_d = [], [], [], []
-                ppo.update(bs, ba, br)
+    #### log files for multiple runs are NOT overwritten
+    log_dir = "PPO_logs"
+    if not os.path.exists(log_dir):
+          os.makedirs(log_dir)
 
+    log_dir = log_dir + '/' + env_name + '/'
+    if not os.path.exists(log_dir):
+          os.makedirs(log_dir)
+
+    #### get number of log files in log directory
+    run_num = 0
+    current_num_files = next(os.walk(log_dir))[2]
+    run_num = len(current_num_files)
+
+    #### create new log file for each run
+    log_f_name = log_dir + '/PPO_' + env_name + "_log_" + str(run_num) + ".csv"
+
+    print("current logging run number for " + env_name + " : ", run_num)
+    print("logging at : " + log_f_name)
+    #####################################################
+
+    ################### checkpointing ###################
+    run_num_pretrained = 2      #### change this to prevent overwriting weights in same env_name folder
+
+    directory = "PPO_preTrained"
+    if not os.path.exists(directory):
+          os.makedirs(directory)
+
+    directory = directory + '/' + env_name + '/'
+    if not os.path.exists(directory):
+          os.makedirs(directory)
+
+
+    checkpoint_path = directory + "PPO_{}_{}_{}.pth".format(env_name, random_seed, run_num_pretrained)
+    print("save checkpoint path : " + checkpoint_path)
+    #####################################################
+
+
+    ############# print all hyperparameters #############
+    print("--------------------------------------------------------------------------------------------")
+    print("max training timesteps : ", max_training_timesteps)
+    print("max timesteps per episode : ", max_ep_len)
+    print("model saving frequency : " + str(save_model_freq) + " timesteps")
+    print("log frequency : " + str(log_freq) + " timesteps")
+    print("printing average reward over episodes in last : " + str(print_freq) + " timesteps")
+    print("--------------------------------------------------------------------------------------------")
+    print("state space dimension : ", state_dim)
+    print("action space dimension : ", action_dim)
+    print("--------------------------------------------------------------------------------------------")
+    if has_continuous_action_space:
+        print("Initializing a continuous action space policy")
+        print("--------------------------------------------------------------------------------------------")
+        print("starting std of action distribution : ", action_std)
+        print("decay rate of std of action distribution : ", action_std_decay_rate)
+        print("minimum std of action distribution : ", min_action_std)
+        print("decay frequency of std of action distribution : " + str(action_std_decay_freq) + " timesteps")
+    else:
+        print("Initializing a discrete action space policy")
+    print("--------------------------------------------------------------------------------------------")
+    print("PPO update frequency : " + str(update_timestep) + " timesteps")
+    print("PPO K epochs : ", K_epochs)
+    print("PPO epsilon clip : ", eps_clip)
+    print("discount factor (gamma) : ", gamma)
+    print("--------------------------------------------------------------------------------------------")
+    print("optimizer learning rate actor : ", lr_actor)
+    print("optimizer learning rate critic : ", lr_critic)
+    if random_seed:
+        print("--------------------------------------------------------------------------------------------")
+        print("setting random seed to ", random_seed)
+        torch.manual_seed(random_seed)
+        env.seed(random_seed)
+        np.random.seed(random_seed)
+    #####################################################
+
+    print("============================================================================================")
+
+    ################# training procedure ################
+
+    # initialize a PPO agent
+    ppo_agent = build_agent(env.env_info,state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space, action_std)
+    # ppo_agent.load("PPO_preTrained/air-hockey-hit/PPO_air-hockey-hit_0_1.pth")
+    # track total training time
+    start_time = datetime.now().replace(microsecond=0)
+    print("Started training at (GMT) : ", start_time)
+
+    print("============================================================================================")
+
+    # logging file
+    log_f = open(log_f_name,"w+")
+    log_f.write('episode,timestep,reward\n')
+
+    # printing and logging variables
+    print_running_reward = 0
+    print_running_episodes = 0
+
+    log_running_reward = 0
+    log_running_episodes = 0
+
+    time_step = 0
+    i_episode = 0
+    render = 0
+    # training loop
+    while time_step <= max_training_timesteps:
+
+        state = env.reset()
+        current_ep_reward = 0
+
+        for t in range(1, max_ep_len+1):
+
+            # select action with policy
+            action = ppo_agent.draw_action(state)
+            state, reward, done, info_ = env.step(action)
+            done_bool = float(info_["success"]) 
+            reward = cust_rewards(ppo_agent,state,done_bool)
+            if render:
+                env.render()
+            # saving reward and is_terminals
+            ppo_agent.buffer.rewards.append(reward)
+            ppo_agent.buffer.is_terminals.append(done)
+
+            time_step +=1
+            current_ep_reward += reward
+
+            # update PPO agent
+            if time_step % update_timestep == 0:
+                print("PPO_update/n")
+                ppo_agent.update()
+
+            # if continuous action space; then decay action std of ouput action distribution
+            if has_continuous_action_space and time_step % action_std_decay_freq == 0:
+                ppo_agent.decay_action_std(action_std_decay_rate, min_action_std)
+
+            # log in logging file
+            if time_step % log_freq == 0:
+
+                # log average reward till last episode
+                log_avg_reward = log_running_reward / log_running_episodes
+                log_avg_reward = round(log_avg_reward, 4)
+
+                log_f.write('{},{},{}\n'.format(i_episode, time_step, log_avg_reward))
+                log_f.flush()
+
+                log_running_reward = 0
+                log_running_episodes = 0
+
+            # printing average reward
+            if time_step % print_freq == 0:
+
+                # print average reward till last episode
+                print_avg_reward = print_running_reward / print_running_episodes
+                print_avg_reward = round(print_avg_reward, 2)
+
+                print("Episode : {} \t\t Timestep : {} \t\t Average Reward : {}".format(i_episode, time_step, print_avg_reward))
+
+                print_running_reward = 0
+                print_running_episodes = 0
+
+            # save model weights
+            if time_step % save_model_freq == 0:
+                print("--------------------------------------------------------------------------------------------")
+                print("saving model at : " + checkpoint_path)
+                ppo_agent.save(checkpoint_path)
+                print("model saved")
+                print("Elapsed Time  : ", datetime.now().replace(microsecond=0) - start_time)
+                print("--------------------------------------------------------------------------------------------")
+
+            # break; if the episode is over
             if done:
                 break
 
-        if ep%50==0:
-            ppo.save_model(MODEL_PATH)
-        print(
-            'Episode: {}/{}  | Episode Reward: {:.4f}  | Running Time: {:.4f}'.format(
-                ep, EP_MAX, ep_r,
-                time.time() - t0
-            )
-        )
-        rewards_queue.put(ep_r)        
-    ppo.save_model(MODEL_PATH)
+        print_running_reward += current_ep_reward
+        print_running_episodes += 1
+
+        log_running_reward += current_ep_reward
+        log_running_episodes += 1
+
+        i_episode += 1
+
+    log_f.close()
     env.close()
 
+    # print total training time
+    print("============================================================================================")
+    end_time = datetime.now().replace(microsecond=0)
+    print("Started training at (GMT) : ", start_time)
+    print("Finished training at (GMT) : ", end_time)
+    print("Total training time  : ", end_time - start_time)
+    print("============================================================================================")
 
-# %%
 
-def build_agent(env_info,state_dim, action_dim, hidden_dim):
-    """
-    Function where an Agent that controls the environments should be returned.
-    The Agent should inherit from the mushroom_rl Agent base env.
-
-    Args:
-        env_info (dict): The environment information
-        kwargs (any): Additionally setting from agent_config.yml
-    Returns:
-         (AgentBase) An instance of the Agent
-    """
-    agent_id = 1
-    agent = PPO(env_info,agent_id,state_dim, action_dim, hidden_dim)
-    # agent.load("models/TD3_air-hockey_final")
-    return agent
-
-# %%
-
-def main():
-    # reproducible
-    # env.seed(RANDOMSEED)
-    np.random.seed(RANDOMSEED)
-    torch.manual_seed(RANDOMSEED)
-
-    # env = gym.make(ENV_NAME)
-    env = AirHockeyChallengeWrapper(env="3dof-hit", action_type="position-velocity", interpolation_order=3, debug=False)
-
-    state_dim = 12
-    action_dim = 6
-    HIDDEN_DIM = 512
-    ppo = build_agent(env.env_info,state_dim, action_dim, hidden_dim=HIDDEN_DIM)
-
-    if args.train:
-        ppo.actor.share_memory() # this only shares memory, not the buffer for policy training
-        ppo.critic.share_memory()
-        ShareParameters(ppo.actor_optimizer)
-        ShareParameters(ppo.critic_optimizer)
-        rewards_queue=mp.Queue()  # used for get rewards from all processes and plot the curve
-        processes=[]
-        rewards=[]
-
-        for i in range(NUM_WORKERS):
-            process = Process(target=worker, args=(i, ppo, rewards_queue))  # the args contain shared and not shared
-            process.daemon=True  # all processes closed when the main stops
-            processes.append(process)
-
-        [p.start() for p in processes]
-        while True:  # keep geting the episode reward from the queue
-            r = rewards_queue.get()
-            if r is not None:
-                if len(rewards) == 0:
-                    rewards.append(r)
-                else:
-                    rewards.append(rewards[-1] * 0.9 + r * 0.1)
-            else:
-                break
-
-            if len(rewards)%20==0 and len(rewards)>0:
-                plot(rewards)
-
-        [p.join() for p in processes]  # finished at the same time
-
-        ppo.save_model(MODEL_PATH)
-        
-
-    if args.test:
-        ppo.load_model(MODEL_PATH)
-        while True:
-            s = env.reset()
-            eps_r=0
-            for i in range(EP_LEN):
-                env.render()
-                s, r, done, _ = env.step(ppo.draw_action(s, True))
-                eps_r+=r
-                if done:
-                    break
-            print('Episode reward: {}  | Episode length: {}'.format(eps_r, i))
 if __name__ == '__main__':
-    main()
+
+    train()
     
-
-
+    
+    
+    
+    
+    
+    
