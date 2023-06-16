@@ -69,7 +69,7 @@ if __name__ == '__main__':
     steps = 0
     while True:
         action = np.zeros(3)
-
+        
         observation, reward, done, info = env.step(action)
         env.render()
 

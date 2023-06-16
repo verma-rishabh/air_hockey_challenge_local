@@ -15,9 +15,10 @@ class Actor(nn.Module):
 	def __init__(self, state_dim, action_dim, max_action):
 		super(Actor, self).__init__()
 
-		self.l1 = nn.Linear(state_dim, 256)
-		self.l2 = nn.Linear(256, 256)
-		self.l3 = nn.Linear(256, action_dim)
+		self.l1 = nn.Linear(state_dim, 512)
+		self.l2 = nn.Linear(512, 512)
+		self.l3 = nn.Linear(512, 256)
+		self.l4 = nn.Linear(256, action_dim)
 		
 		self.max_action = max_action
 		
@@ -25,7 +26,8 @@ class Actor(nn.Module):
 	def forward(self, state):
 		a = F.relu(self.l1(state))
 		a = F.relu(self.l2(a))
-		return self.max_action * torch.tanh(self.l3(a))
+		a = F.relu(self.l3(a))
+		return self.max_action * torch.tanh(self.l4(a))
 
 
 class Critic(nn.Module):
@@ -33,13 +35,15 @@ class Critic(nn.Module):
 		super(Critic, self).__init__()
 
 		# Q1 architecture
-		self.l1 = nn.Linear(state_dim + action_dim, 256)
-		self.l2 = nn.Linear(256, 256)
+		self.l1 = nn.Linear(state_dim + action_dim, 512)
+		self.l2 = nn.Linear(512, 512)
+		self.l2_b = nn.Linear(512, 256)
 		self.l3 = nn.Linear(256, 1)
 
 		# Q2 architecture
-		self.l4 = nn.Linear(state_dim + action_dim, 256)
-		self.l5 = nn.Linear(256, 256)
+		self.l4 = nn.Linear(state_dim + action_dim, 512)
+		self.l5 = nn.Linear(512, 512)
+		self.l5_b = nn.Linear(512, 256)
 		self.l6 = nn.Linear(256, 1)
 
 
@@ -48,10 +52,12 @@ class Critic(nn.Module):
 
 		q1 = F.relu(self.l1(sa))
 		q1 = F.relu(self.l2(q1))
+		q1 = F.relu(self.l2_b(q1))
 		q1 = self.l3(q1)
 
 		q2 = F.relu(self.l4(sa))
 		q2 = F.relu(self.l5(q2))
+		q2 = F.relu(self.l5_b(q2))
 		q2 = self.l6(q2)
 		return q1, q2
 
@@ -61,6 +67,7 @@ class Critic(nn.Module):
 
 		q1 = F.relu(self.l1(sa))
 		q1 = F.relu(self.l2(q1))
+		q1 = F.relu(self.l2_b(q1))
 		q1 = self.l3(q1)
 		return q1
 
@@ -77,10 +84,14 @@ class TD3_agent(AgentBase):
 		policy_freq=2
 	):
 		super(TD3_agent, self).__init__(env_info, agent_id)
-		state_dim = env_info['rl_info'].shape[0]
-		action_dim = env_info['rl_info'].shape[1]*2 
-		max_action = float(np.max(abs(env_info['robot']['joint_pos_limit'])))
-		
+		state_dim = 12
+		action_dim = 6 
+		pos_max = env_info['robot']['joint_pos_limit'][1]
+		vel_max = env_info['robot']['joint_vel_limit'][1] 
+		max_ = np.stack([pos_max,vel_max],dtype=np.float32)
+		max_action  = max_.reshape(6,)
+		max_action = torch.from_numpy(max_action).to(device)
+
 		self.actor = Actor(state_dim, action_dim, max_action).to(device)
 		self.actor_target = copy.deepcopy(self.actor)
 		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
@@ -121,6 +132,7 @@ class TD3_agent(AgentBase):
 			).clamp(-self.max_action, self.max_action)
 
 			# Compute the target Q value
+			# print(next_action.type(),next_state.type())
 			target_Q1, target_Q2 = self.critic_target(next_state, next_action)
 			target_Q = torch.min(target_Q1, target_Q2)
 			target_Q = reward + not_done * self.discount * target_Q
@@ -171,4 +183,5 @@ class TD3_agent(AgentBase):
 		self.actor.load_state_dict(torch.load(filename + "_actor"))
 		self.actor_optimizer.load_state_dict(torch.load(filename + "_actor_optimizer"))
 		self.actor_target = copy.deepcopy(self.actor)
-		
+	def reset(self):
+		pass
