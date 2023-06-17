@@ -14,7 +14,7 @@ def build_agent(env_info,agent_id=1):
          (AgentBase) An instance of the Agent
     """
     agent = TD3_agent(env_info,agent_id)
-    # agent.load("models/TD3-v2_air-hockey_f")
+    agent.load("models/TD3-single-r_air-hockey_0")
     return agent
 
 def build_agent_ddpg(env_info,agent_id=1):
