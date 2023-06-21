@@ -117,7 +117,8 @@ class TD3_agent(AgentBase):
 
 	def train(self, replay_buffer, batch_size=256):
 		self.total_it += 1
-
+		_critic_loss = np.nan
+		_actor_loss = np.nan
 		# Sample replay buffer 
 		state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
 
@@ -142,7 +143,7 @@ class TD3_agent(AgentBase):
 
 		# Compute critic loss
 		critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
-
+		_critic_loss = critic_loss.item()
 		# Optimize the critic
 		self.critic_optimizer.zero_grad()
 		critic_loss.backward()
@@ -153,7 +154,7 @@ class TD3_agent(AgentBase):
 
 			# Compute actor losse
 			actor_loss = -self.critic.Q1(state, self.actor(state)).mean()
-			
+			_actor_loss = actor_loss.item()
 			# Optimize the actor 
 			self.actor_optimizer.zero_grad()
 			actor_loss.backward()
@@ -165,7 +166,8 @@ class TD3_agent(AgentBase):
 
 			for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
 				target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-
+		
+		return _critic_loss,_actor_loss
 
 	def save(self, filename):
 		torch.save(self.critic.state_dict(), filename + "_critic")
