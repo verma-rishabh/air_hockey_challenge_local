@@ -1,6 +1,4 @@
-from air_hockey_agent.TD3 import TD3_agent
-
-def build_agent(env_info,agent_id=1):
+def build_agent(env_info, **kwargs):
     """
     Function where an Agent that controls the environments should be returned.
     The Agent should inherit from the mushroom_rl Agent base env.
@@ -12,4 +10,4 @@ def build_agent(env_info,agent_id=1):
          (AgentBase) An instance of the Agent
     """
 
-    return TD3_agent(env_info,agent_id)
+    raise NotImplementedError
