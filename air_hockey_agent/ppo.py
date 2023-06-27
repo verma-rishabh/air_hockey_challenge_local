@@ -3,7 +3,7 @@ import random
 import time
 from distutils.util import strtobool
 import sys
-sys.path.append('/Users/zahrapadar/Desktop/DL-LAB/project/air_hockey_challenge_local_warmup/')
+# sys.path.append('/Users/zahrapadar/Desktop/DL-LAB/project/air_hockey_challenge_local_warmup/')
 
 # import gymnasium as gym
 import numpy as np
@@ -30,18 +30,18 @@ class PPO_Agent(AgentBase, nn.Module):
 
         
         self.critic = nn.Sequential(
-            self.layer_init(nn.Linear(np.array(self.state_dim), 64)),
+            self.layer_init(nn.Linear(np.array(self.state_dim), 256)),
             nn.Tanh(),
-            self.layer_init(nn.Linear(64, 64)),
+            self.layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
-            self.layer_init(nn.Linear(64, 1), std=1.0),
+            self.layer_init(nn.Linear(256, 1), std=1.0),
         )
         self.actor_mean = nn.Sequential(
-            self.layer_init(nn.Linear(self.state_dim, 64)),
+            self.layer_init(nn.Linear(self.state_dim, 256)),
             nn.Tanh(),
-            self.layer_init(nn.Linear(64, 64)),
+            self.layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
-            self.layer_init(nn.Linear(64, self.action_dim), std=0.01),
+            self.layer_init(nn.Linear(256, self.action_dim), std=0.01),
         )
 
         # standard dev. of the components of the action
@@ -72,6 +72,8 @@ class PPO_Agent(AgentBase, nn.Module):
         action_mean = self.actor_mean(x) # unnormalized action probabilities
         action_logstd = self.actor_logstd #.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
+        print("action_mean",action_mean)
+        print("action_std",action_std)
         probs = Normal(action_mean, action_std) #in discrete we use Categorical ~ softmax
         if action is None:
             action = probs.sample()

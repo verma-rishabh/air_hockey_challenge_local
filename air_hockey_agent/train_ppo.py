@@ -7,7 +7,7 @@ import random
 import time
 from distutils.util import strtobool
 import sys
-sys.path.append('/Users/zahrapadar/Desktop/DL-LAB/project/air_hockey_challenge_local_warmup/')
+# sys.path.append('/Users/zahrapadar/Desktop/DL-LAB/project/air_hockey_challenge_local_warmup/')
 
 # import gymnasium as gym
 import numpy as np
@@ -37,13 +37,13 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="3dof-hit",
         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=2000000,
+    parser.add_argument("--total-timesteps", type=int, default=1e6,
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=3e-4,
         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=1,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=2048,
+    parser.add_argument("--num-steps", type=int, default=100,
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -87,8 +87,8 @@ def cust_rewards(policy,state,done,episode_timesteps):
     # print(dist)
     reward =-10 if abs(policy.get_ee_pose(state)[0][1])>0.5 else reward
     reward =-10 if abs(policy.get_ee_pose(state)[0][0])<0.536 else reward
-    reward -= episode_timesteps*0.1
-    print(reward)
+    # reward -= episode_timesteps*0.1
+    # print(reward)
     return reward
 
 
@@ -152,7 +152,7 @@ if __name__ == "__main__":
     next_obs = envs.reset()
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-    num_updates = args.total_timesteps // args.batch_size
+    num_updates = int(args.total_timesteps // args.batch_size)
 
     for update in range(1, num_updates + 1):
         # Annealing the rate if instructed to do so.
@@ -180,7 +180,7 @@ if __name__ == "__main__":
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
 
-            print(f"global_step{global_step}: reward> {rewards[step]}")
+            # print(f"global_step{global_step}: reward> {rewards[step]}")
 
             #infos: 'constraints_value', 'jerk', 'success'
 
@@ -203,9 +203,9 @@ if __name__ == "__main__":
             returns = advantages + values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.state_dim)
+        b_obs = obs.reshape((-1,) + (12,))
         b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + state_dim)
+        b_actions = actions.reshape((-1,) + (6,))
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
@@ -220,7 +220,8 @@ if __name__ == "__main__":
                 mb_inds = b_inds[start:end]
 
                 # forward pass on minibatch
-                newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
+                
+                _,newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
@@ -265,7 +266,8 @@ if __name__ == "__main__":
             if args.target_kl is not None:
                 if approx_kl > args.target_kl: #an early stopping 0.015 is a good threshold
                     break
-
+            if num_updates%100:
+                print(num_updates,loss.item())
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
