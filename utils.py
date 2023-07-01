@@ -3,25 +3,23 @@ import torch
 
 
 class ReplayBuffer(object):
-	def __init__(self, state_dim, action_dim, max_size=int(1e4)):
+	def __init__(self, state_dim, action_dim, max_size=int(1e6)):
 		self.max_size = max_size
 		self.ptr = 0
 		self.size = 0
 
 		self.state = np.zeros((max_size, state_dim))
 		self.action = np.zeros((max_size, action_dim))
-		self.loss = np.zeros((max_size, action_dim))
 		self.next_state = np.zeros((max_size, state_dim))
-		self.reward = np.zeros((max_size, 1))
+		self.reward = np.zeros((max_size, action_dim))
 		self.not_done = np.zeros((max_size, 1))
 
 		self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-	def add(self, state, action, next_state, reward,loss, done):
+	def add(self, state, action, next_state, reward, done):
 		self.state[self.ptr] = state
 		self.action[self.ptr] = action
-		self.loss[self.ptr] = loss
 		self.next_state[self.ptr] = next_state
 		self.reward[self.ptr] = reward
 		self.not_done[self.ptr] = 1. - done
@@ -30,23 +28,18 @@ class ReplayBuffer(object):
 		self.size = min(self.size + 1, self.max_size)
 
 
-	def sample(self):
-		ind = self.size
+	def sample(self, batch_size):
+		ind = np.random.randint(0, self.size, size=batch_size)
 
 		return (
-			torch.FloatTensor(self.state[:ind]).to(self.device),
-			torch.FloatTensor(self.action[:ind]).to(self.device),
-			torch.FloatTensor(self.next_state[:ind]).to(self.device),
-			torch.FloatTensor(self.reward[:ind]).to(self.device),
-			torch.FloatTensor(self.loss[:ind]).to(self.device),
-			torch.FloatTensor(self.not_done[:ind]).to(self.device)
+			torch.FloatTensor(self.state[ind]).to(self.device),
+			torch.FloatTensor(self.action[ind]).to(self.device),
+			torch.FloatTensor(self.next_state[ind]).to(self.device),
+			torch.FloatTensor(self.reward[ind]).to(self.device),
+			torch.FloatTensor(self.not_done[ind]).to(self.device)
 		)
 	
 	def save(self,filename):
 		np.savez(filename,state = self.state[:self.size,::],action = self.action[:self.size,::],\
-			next_state = self.next_state[:self.size,::],reward = self.reward[:self.size,::],\
-				loss = self.loss[:self.size,::],not_done =self.not_done[:self.size,::])
+			next_state = self.next_state[:self.size,::],reward = self.reward[:self.size,::],not_done =self.not_done[:self.size,::])
 	
-	def reset(self):
-		self.ptr = 0
-		self.size = 0

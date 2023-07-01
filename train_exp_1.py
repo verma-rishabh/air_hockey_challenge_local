@@ -33,7 +33,7 @@ class train(AirHockeyChallengeWrapper):
         # make dirs 
         self.make_dir()
         tensorboard_dir=self.conf.agent.dump_dir + "/tensorboard/"
-        self.tensorboard = Evaluation(tensorboard_dir, "train", ["actor_loss","total_reward"])
+        self.tensorboard = Evaluation(tensorboard_dir, "train", ["critic_loss","actor_loss","total_reward"])
         # load model if defined
         if self.conf.agent.load_model!= "":
             policy_file = self.conf.agent.file_name if self.conf.agent.load_model == "default" else self.conf.agent .load_model
@@ -48,19 +48,22 @@ class train(AirHockeyChallengeWrapper):
         if not os.path.exists(self.conf.agent.dump_dir+"/models"):
             os.makedirs(self.conf.agent.dump_dir+"/models")
 
-    def _loss(self,state,reward):
-        loss = np.zeros((2,7))
+    def _loss(self,next_state,action,reward):
+        desired_action = np.zeros((2,7))
         des_z = self.env_info['robot']['ee_desired_height']
-        ee_pos = self.policy.get_ee_pose(state)[0] 
+        ee_pos = self.policy.get_ee_pose(next_state)[0] 
         ee_pos[2] = des_z
         # angles 
         success,desired_angles = inverse_kinematics(self.policy.robot_model, self.policy.robot_data,ee_pos)
         if success:                                         # if the confg. is possible
-            loss[0,:] = desired_angles                      
+            desired_action[0,:] = desired_angles  
+            loss = - np.square(np.subtract(action, desired_action)).reshape(-1,)/self.max_action    #because its a reward and hence should be -ve                
         else:
-            loss[0,:] = 1                                   # have to think about this
-        # loss[0,-1] = reward
-        loss = loss
+            loss = desired_action.reshape(-1,)
+            loss[:] = -1                                   # have to think about this
+        loss+=reward
+
+        # loss[6] = reward
         return loss
 
     def cust_rewards(self,state,done):
@@ -86,7 +89,7 @@ class train(AirHockeyChallengeWrapper):
             reward -=1 
         if (self.policy.get_ee_pose(state)[0][2]-0.1)<des_z-tolerance or (self.policy.get_ee_pose(state)[0][2]-0.1)>des_z+tolerance:
             reward -=1
-        print (reward)
+        # print (reward)
 
 
         return reward
@@ -106,12 +109,12 @@ class train(AirHockeyChallengeWrapper):
             while not done and episode_timesteps<50:
                 # print("ep",episode_timesteps)
                 action = self.policy.draw_action(np.array(state))
-                next_state, reward,loss, done, _ = self._step(state,action)
+                next_state, reward, done, _ = self._step(state,action)
                 # done_bool = float(_["success"]) 
                 # reward = cust_rewards(policy,state,done_bool,episode_timesteps)
                 print(reward)
                 self.render()
-                avg_reward += reward
+                avg_reward += reward.mean()
                 episode_timesteps+=1
                 state = next_state
 
@@ -124,8 +127,8 @@ class train(AirHockeyChallengeWrapper):
     def _step(self,state,action):
         next_state, reward, done, info = self.step(action)
         reward = self.cust_rewards(state,done)
-        loss = self._loss(next_state,reward)
-        return next_state, reward,loss, done, info
+        reward = self._loss(next_state,action,reward)
+        return next_state, reward, done, info
 
     def _monte_carlo(self,rewards):
         pre_value = 0
@@ -140,56 +143,54 @@ class train(AirHockeyChallengeWrapper):
         episode_reward = 0
         episode_timesteps = 0
         episode_num = 0
-        actor_loss = np.nan
+        intermediate_t=0
         for t in range(int(self.conf.agent.max_timesteps)):
-            # critic_loss = np.nan
-            
+            critic_loss = np.nan
+            actor_loss = np.nan
             episode_timesteps += 1
-           
+            intermediate_t+=1
             # Select action randomly or according to policy
             if t < self.conf.agent.start_timesteps:
                 # action = env.action_space.sample()
                 action = np.random.uniform(-self.max_action,self.max_action,(14,)).reshape(2,7)
             else:
                 action = self.policy.draw_action(np.array(state))
+            
             # Perform action
-            next_state, reward,loss, done, _ = self._step(state,action) 
-            # self.render()
-            # done_bool = float(done)
+            next_state, reward, done, _ = self._step(state,action) 
+            # print(next_state[3])
+            # env.render()
+            # done_bool = float(done) if episode_timesteps < env._max_episode_steps else 0   ###MAX EPISODE STEPS
+            done_bool = float(done) 
+            # reward = cust_rewards(policy,state,done,episode_timesteps)
             # Store data in replay buffer
-            self.replay_buffer.add(state, action.reshape(-1,), next_state, reward,\
-                loss.reshape(-1,), done)
+            self.replay_buffer.add(state, action.reshape(-1,), next_state, reward.reshape(-1,), done)
             # print(intermediate_t,reward)
             state = next_state
-            episode_reward += reward
+            episode_reward += reward.mean()
 
-            if self.replay_buffer.size>= self.conf.agent.batch_size:
-                state_, action_, next_state_, reward_,loss_, not_done = self.replay_buffer.sample()
-                # rewar d = self._monte_carlo(reward)                                           # replacing last joint loss with cumulative reward (Q value)
+            # Train agent after collecting sufficient data
+            if t >= self.conf.agent.start_timesteps:
+                critic_loss,actor_loss=self.policy.train(self.replay_buffer, self.conf.agent.batch_size)
+
+            if done or intermediate_t > 50: 
                 # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
-                actor_loss=self.policy.train(state_,loss_,reward_)
-                self.replay_buffer.reset()
-                
-
-            if done or episode_timesteps > 50:
-                
                 print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f}")
                 # Reset environment
-                self.tensorboard.write_episode_data(t, eval_dict={"actor_loss":actor_loss,\
+                self.tensorboard.write_episode_data(t, eval_dict={ "critic_loss" : critic_loss,\
+                    "actor_loss":actor_loss,\
                         "total_reward":episode_reward})
                 state, done = self.reset(), False
                 episode_reward = 0
                 episode_timesteps = 0
                 episode_num += 1 
-                
+                intermediate_t=0
             # print(t)
             # Evaluate episode
             if (t + 1) % self.conf.agent.eval_freq == 0:
-                
                 evaluations.append(self.eval_policy())
                 np.save(self.conf.agent.dump_dir +f"/results/{self.conf.agent.file_name}", evaluations)
                 if 1: self.policy.save(self.conf.agent.dump_dir + f"/models/{self.conf.agent.file_name}")
-            
 
 x = train()
 x.train_model()
