@@ -77,6 +77,31 @@ def parse_args():
     print("Arguments",  args)
     return args
 
+def eval_policy(policy,env, eval_episodes=5):
+    # eval_env = AirHockeyChallengeWrapper(env="3dof-hit", action_type="position-velocity", interpolation_order=3, debug=True,custom_reward_function=custom_rewards)
+    # eval_env.seed(0 + 100)
+
+    avg_reward = 0.
+    for _ in range(eval_episodes):
+        print(_)
+        state, done = env.reset(), False
+        episode_timesteps=0
+        while not done and episode_timesteps<100:
+            print("ep",episode_timesteps)
+            action = policy.draw_action(np.array(state))
+            state, reward, done, _ = env.step(action.reshape(2,3))
+            env.render()
+            avg_reward += reward
+            episode_timesteps+=1
+
+    avg_reward /= eval_episodes
+
+    print("---------------------------------------")
+    print(f"Evaluation over {eval_episodes} episodes: {avg_reward:.3f}")
+    print("---------------------------------------")
+    return avg_reward
+
+
 def reward_c(self, state, action, next_state, absorbing):
     r = 0
     action_penalty = 1e-3
@@ -194,7 +219,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     # observation, reward, done, info = env.step(action)
 
-    envs = make_env(args.env_id, args.seed, custom_reward_function=reward_c)
+    envs = make_env(args.env_id, args.seed, custom_reward_function=reward_c)  #whyyyy env's'🤌🏻???
     env_info = envs.env_info
 
     state_dim = env_info["rl_info"].observation_space.low.shape[0]
@@ -226,6 +251,9 @@ if __name__ == "__main__":
     # next_done[global_step] = done
 
     for update in range(1, num_updates + 1):
+        if update % 10 == 0:
+            eval_policy(agent,envs)
+            agent.save(f"./models/agent")
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates # linearly decreases to 0
@@ -269,7 +297,7 @@ if __name__ == "__main__":
             state, next_done = torch.Tensor(state).to(device), torch.Tensor(next_done).to(device)
             
 
-            print(f"global_step{global_step}: reward {rewards[step], reward}")
+            # print(f"global_step{global_step}: reward {rewards[step], reward}")
 
             #infos: 'constraints_value', 'jerk', 'success'
 

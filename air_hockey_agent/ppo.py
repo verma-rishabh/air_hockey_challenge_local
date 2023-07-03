@@ -35,17 +35,17 @@ class PPO_Agent(AgentBase, nn.Module):
             self.layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
             self.layer_init(nn.Linear(256, 1), std=1.0),
-        )
+        ).to(device)
         self.actor_mean = nn.Sequential(
             self.layer_init(nn.Linear(self.state_dim, 256)),
             nn.Tanh(),
             self.layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
             self.layer_init(nn.Linear(256, self.action_dim), std=0.01),
-        )
+        ).double().to(device)
 
         # standard dev. of the components of the action
-        self.actor_logstd = nn.Parameter(torch.zeros(1, self.action_dim))
+        self.actor_logstd = nn.Parameter(torch.zeros(1, self.action_dim)).to(device)
         # the parameters declared with nn.Parameter are automatically registered as trainable parameters 
         # of the model. The optimizer is responsible for updating these parameters based on the 
         # computed gradients
@@ -53,31 +53,32 @@ class PPO_Agent(AgentBase, nn.Module):
 
     @staticmethod
     def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-            torch.nn.init.orthogonal_(layer.weight, std)
-            torch.nn.init.constant_(layer.bias, bias_const)
+            torch.nn.init.orthogonal_(layer.weight, std).to(device)
+            torch.nn.init.constant_(layer.bias, bias_const).to(device)
             return layer
 
     def get_value(self, x):
-        return self.critic(x)
+        return self.critic(x.to(device))
     
     def draw_action(self, x):
         # x being the observation
         if not isinstance(x, torch.Tensor):
-            x = torch.from_numpy(x)
-        self.actor_mean = self.actor_mean.double()
+            x = torch.from_numpy(x).to(device)
+        # self.actor_mean = self.actor_mean.double()
         action_mean = self.actor_mean(x)
         action_logstd = self.actor_logstd #.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
-        print(action_std)
+        # print(action_std)
         probs = Normal(action_mean, action_std)
-        return probs.sample().reshape(2,3)
+        return probs.sample().cpu().data.numpy().reshape(2,3)
 
     def get_action_and_value(self, x, action=None):
-        action_mean = self.actor_mean(x) # unnormalized action probabilities
+        
+        action_mean = self.actor_mean(x.double()) # unnormalized action probabilities
         action_logstd = self.actor_logstd #.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
-        print("action_mean",action_mean)
-        print("action_std",action_std)
+        # print("action_mean",action_mean)
+        # print("action_std",action_std)
         probs = Normal(action_mean, action_std) #in discrete we use Categorical ~ softmax
         if action is None:
             action = probs.sample()
