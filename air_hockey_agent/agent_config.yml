@@ -2,7 +2,7 @@
 # the evaluation of an Agent. The parameters are explained in more detail in air_hockey_challenge/framework/evaluate_agent.py
 
 # Environment Parameters
-interpolation_order: 3
+interpolation_order: -1
 # Execution Parameters
 render: False
 quiet: False

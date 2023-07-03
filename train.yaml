@@ -14,5 +14,5 @@ agent:
     policy_freq: 10       
     save_model: True     
     load_model: ""               
-    dump_dir : /run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG
+    dump_dir : /run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG_exp2
     file_name : ${agent.policy}_${env}_${agent.seed}
