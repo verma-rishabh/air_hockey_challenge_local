@@ -38,7 +38,7 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="3dof-hit",
         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=100000,
+    parser.add_argument("--total-timesteps", type=int, default=1e7,
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=3e-4,
         help="the learning rate of the optimizer")
@@ -247,7 +247,7 @@ if __name__ == "__main__":
     # next_obs = state
     state = torch.Tensor(state).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-    num_updates = args.total_timesteps // args.batch_size
+    num_updates = int(args.total_timesteps) // args.batch_size          # 1e7 notation saves as float
     # next_done[global_step] = done
 
     for update in range(1, num_updates + 1):
