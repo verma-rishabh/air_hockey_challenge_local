@@ -6,6 +6,7 @@ import os
 import random
 import time
 import datetime
+import yaml
 from distutils.util import strtobool
 import sys
 sys.path.append('/Users/zahrapadar/Desktop/DL-LAB/project/air_hockey_challenge_local_warmup/')
@@ -17,7 +18,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
-
 from air_hockey_challenge.framework.agent_base import AgentBase
 from air_hockey_challenge.framework import AirHockeyChallengeWrapper
 # from air_hockey_agent.agent_builder import build_agent_ppo
@@ -38,13 +38,13 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="3dof-hit",
         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=1000,
+    parser.add_argument("--total-timesteps", type=int, default=100000,
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=3e-4,
         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=1,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=256,
+    parser.add_argument("--num-steps", type=int, default=512,
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -54,7 +54,7 @@ def parse_args():
         help="the lambda for the general advantage estimation")
     parser.add_argument("--num-minibatches", type=int, default=8,
         help="the number of mini-batches")
-    parser.add_argument("--update-epochs", type=int, default=10,
+    parser.add_argument("--update-epochs", type=int, default=8,
         help="the K epochs to update the policy")
     parser.add_argument("--norm-adv", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggles advantages normalization")
@@ -77,7 +77,69 @@ def parse_args():
     print("Arguments",  args)
     return args
 
-def cust_rewards(policy,state,done,episode_timesteps):
+def reward_c(self, state, action, next_state, absorbing):
+    r = 0
+    action_penalty = 1e-3
+    has_hit = self._check_collision("puck", "robot_1/ee")
+
+    # if not self.has_bounce:
+        # self.has_bounce = self._check_collision("puck", "rim_short_sides")
+    goal = np.array([0.98, 0])
+    puck_pos, puck_vel = self.get_puck(next_state)
+    #print("puck_pos",puck_pos)
+    #print("puck_vel",puck_vel)
+    # width of table minus radius of puck
+    effective_width = 0.51 - 0.03165
+
+    # Calculate bounce point by assuming incoming angle = outgoing angle
+    w = (abs(puck_pos[1]) * goal[0] + goal[1] * puck_pos[0] - effective_width * puck_pos[
+        0] - effective_width *
+            goal[0]) / (abs(puck_pos[1]) + goal[1] - 2 * effective_width)
+    #print("w",w)
+
+    side_point = np.array([w, np.copysign(effective_width, puck_pos[1])])
+    #print("side_point",side_point)
+
+    vec_puck_side = (side_point - puck_pos[:2]) / np.linalg.norm(side_point - puck_pos[:2])
+    vec_puck_goal = (goal - puck_pos[:2]) / np.linalg.norm(goal - puck_pos[:2])
+    # If puck is out of bounds
+    if absorbing:
+        # If puck is in the opponent goal
+        if (puck_pos[0] - self.env_info['table']['length'] / 2) > 0 and \
+                (np.abs(puck_pos[1]) - self.env_info['table']['goal_width']) < 0:
+            r = 200
+
+    else:
+        if not has_hit:
+            ee_pos = self.get_ee()[0][:2]
+
+            dist_ee_puck = np.linalg.norm(puck_pos[:2] - ee_pos)
+
+            vec_ee_puck = (puck_pos[:2] - ee_pos) / dist_ee_puck
+
+            cos_ang_side = np.clip(vec_puck_side @ vec_ee_puck, 0, 1)
+
+            # Reward if vec_ee_puck and vec_puck_goal have the same direction
+            cos_ang_goal = np.clip(vec_puck_goal @ vec_ee_puck, 0, 1)
+            cos_ang = np.max([cos_ang_goal, cos_ang_side])
+
+            r = np.exp(-8 * (dist_ee_puck - 0.08)) * cos_ang ** 2
+        else:
+            r_hit = 0.25 + min([1, (0.25 * puck_vel[0] ** 4)])
+
+            r_goal = 0
+            if puck_pos[0] > 0.7:
+                sig = 0.1
+                r_goal = 1. / (np.sqrt(2. * np.pi) * sig) * np.exp(-np.power((puck_pos[1] - 0) / sig, 2.) / 2)
+
+            r = 2 * r_hit + 10 * r_goal
+
+    r -= action_penalty * np.linalg.norm(action)
+    return r
+
+
+
+def cust_rewards(policy, state, done, episode_timesteps):
 
     reward = 0.0
     ee_pos = policy.get_ee_pose(state)[0]                               
@@ -93,10 +155,10 @@ def cust_rewards(policy,state,done,episode_timesteps):
     reward += policy.get_puck_vel(state)[0]
     reward+= done*100
 
-    if abs(policy.get_ee_pose(state)[0][1])>0.519: #WHY?
+    if abs(policy.get_ee_pose(state)[0][1])>0.519:
         reward -=1 
 
-    if (policy.get_ee_pose(state)[0][0])<0.536: #WHY?
+    if (policy.get_ee_pose(state)[0][0])<0.536:
         reward -=1 
 
     # what if
@@ -111,6 +173,11 @@ def make_env(env_id, seed, custom_reward_function=None):
 
 if __name__ == "__main__":
     args = parse_args()
+    # args = vars(args)
+
+    # with open('config_ppo.yaml', 'w') as yaml_file:
+    #     yaml.dump(args, yaml_file)
+
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
    
     writer = SummaryWriter(f"runs/{run_name}")
@@ -127,7 +194,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     # observation, reward, done, info = env.step(action)
 
-    envs = make_env(args.env_id, args.seed, custom_reward_function=None)
+    envs = make_env(args.env_id, args.seed, custom_reward_function=reward_c)
     env_info = envs.env_info
 
     state_dim = env_info["rl_info"].observation_space.low.shape[0]
@@ -179,10 +246,10 @@ if __name__ == "__main__":
             actions[step] = action
             logprobs[step] = logprob
 
-            # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward_, done, infos = envs.step(action.cpu().numpy().reshape(2,3))
+            next_obs, reward, done, infos = envs.step(action.cpu().numpy().reshape(2,3))
 
-            reward = cust_rewards(agent,next_obs,float(infos["success"]),global_step)
+            writer.add_scalar("charts/custom reward", reward, global_step)
+
             # custom_reward_function(self.base_env,state, action,next_state, absorbing)?????
 
             next_done = np.array(done) 
@@ -202,7 +269,7 @@ if __name__ == "__main__":
             state, next_done = torch.Tensor(state).to(device), torch.Tensor(next_done).to(device)
             
 
-            print(f"global_step{global_step}: reward {rewards[step], reward_}")
+            print(f"global_step{global_step}: reward {rewards[step], reward}")
 
             #infos: 'constraints_value', 'jerk', 'success'
 

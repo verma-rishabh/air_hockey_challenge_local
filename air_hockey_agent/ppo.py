@@ -30,18 +30,18 @@ class PPO_Agent(AgentBase, nn.Module):
 
         
         self.critic = nn.Sequential(
-            self.layer_init(nn.Linear(np.array(self.state_dim), 64)),
+            self.layer_init(nn.Linear(np.array(self.state_dim), 256)),
             nn.Tanh(),
-            self.layer_init(nn.Linear(64, 64)),
+            self.layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
-            self.layer_init(nn.Linear(64, 1), std=1.0),
+            self.layer_init(nn.Linear(256, 1), std=1.0),
         )
         self.actor_mean = nn.Sequential(
-            self.layer_init(nn.Linear(self.state_dim, 64)),
+            self.layer_init(nn.Linear(self.state_dim, 256)),
             nn.Tanh(),
-            self.layer_init(nn.Linear(64, 64)),
+            self.layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
-            self.layer_init(nn.Linear(64, self.action_dim), std=0.01),
+            self.layer_init(nn.Linear(256, self.action_dim), std=0.01),
         )
 
         # standard dev. of the components of the action
