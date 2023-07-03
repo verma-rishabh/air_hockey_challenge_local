@@ -5,6 +5,7 @@ import argparse
 import os
 import random
 import time
+import datetime
 from distutils.util import strtobool
 import sys
 sys.path.append('/Users/zahrapadar/Desktop/DL-LAB/project/air_hockey_challenge_local_warmup/')
@@ -37,13 +38,13 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="3dof-hit",
         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=2000000,
+    parser.add_argument("--total-timesteps", type=int, default=1000,
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=3e-4,
         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=1,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=2048,
+    parser.add_argument("--num-steps", type=int, default=256,
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -51,7 +52,7 @@ def parse_args():
         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=32,
+    parser.add_argument("--num-minibatches", type=int, default=8,
         help="the number of mini-batches")
     parser.add_argument("--update-epochs", type=int, default=10,
         help="the K epochs to update the policy")
@@ -77,19 +78,31 @@ def parse_args():
     return args
 
 def cust_rewards(policy,state,done,episode_timesteps):
-    reward = 0
+
+    reward = 0.0
     ee_pos = policy.get_ee_pose(state)[0]                               
     puck_pos = policy.get_puck_pos(state)
     dist = np.linalg.norm(ee_pos-puck_pos)
-    reward += np.exp(-dist)*10
-    reward+=policy.get_puck_vel(state)[0]*10 *(dist<0.16)
-    reward+=done*1000
-    # print(dist)
-    reward =-10 if abs(policy.get_ee_pose(state)[0][1])>0.5 else reward
-    reward =-10 if abs(policy.get_ee_pose(state)[0][0])<0.536 else reward
-    reward -= episode_timesteps*0.1
-    return reward
+    reward += np.exp(-5*dist) * (puck_pos[0]<=1.51)
+    # reward+=policy.get_puck_vel(state)[0]
+    # # reward -= episode_timesteps*0.01
+    # # if policy.get_puck_vel(state)[0]>0.06 and ((dist>0.16)):
+    # #     reward+=0
+    # reward += np.exp(puck_pos[0]-2.484)*policy.get_puck_vel(state)[0]*(policy.get_puck_vel(state)[0]>0)
+    # reward += np.exp(0.536-puck_pos[0])*policy.get_puck_vel(state)[0] *(policy.get_puck_vel(state)[0]<0)
+    reward += policy.get_puck_vel(state)[0]
+    reward+= done*100
 
+    if abs(policy.get_ee_pose(state)[0][1])>0.519: #WHY?
+        reward -=1 
+
+    if (policy.get_ee_pose(state)[0][0])<0.536: #WHY?
+        reward -=1 
+
+    # what if
+    # reward = -distance_to_target - 0.5 * np.linalg.norm(end_effector_velocity)
+
+    return reward
 
 def make_env(env_id, seed, custom_reward_function=None):
     env = AirHockeyChallengeWrapper(env_id, custom_reward_function=custom_reward_function, interpolation_order=3)
@@ -113,28 +126,18 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     # observation, reward, done, info = env.step(action)
-    
-    # env_info = env.env_info 
-    # pos_max = env_info['robot']['joint_pos_limit'][1]
-    # vel_max = env_info['robot']['joint_vel_limit'][1] 
-    # max_ = np.stack([pos_max,vel_max],dtype=np.float32)
-    # max_action  = max_.reshape(6,)
-    # max_action = torch.from_numpy(max_action).to(device)
 
     envs = make_env(args.env_id, args.seed, custom_reward_function=None)
-    # envs = AirHockeyChallengeWrapper("3dof-hit", custom_reward_function=cust_rewards, interpolation_order=3)
-    # envs.seed = args.seed
+    env_info = envs.env_info
 
-    state_dim = envs.env_info["rl_info"].observation_space.low.shape[0]
-    state_dim_ = envs.env_info["rl_info"].observation_space.low.shape
+    state_dim = env_info["rl_info"].observation_space.low.shape[0]
+    state_dim_ = env_info["rl_info"].observation_space.low.shape
 
-    action_dim = 2 * (envs.env_info["rl_info"].action_space.low.shape[0])
+    action_dim = 2 * (env_info["rl_info"].action_space.low.shape[0])
     action_dim_ = (6,)
-    state, done = envs.reset(), False
+    state, done = envs.reset(), False #initial_state
 
-    
-    agent = PPO_Agent(envs, agent_id=1).to(device)
-
+    agent = PPO_Agent(envs.env_info, agent_id=1).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -148,39 +151,58 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs = envs.reset()
-    next_obs = torch.Tensor(next_obs).to(device)
+    state = envs.reset() # second reset, WHY?????
+    # next_obs = state
+    state = torch.Tensor(state).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     num_updates = args.total_timesteps // args.batch_size
+    # next_done[global_step] = done
 
     for update in range(1, num_updates + 1):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
-            frac = 1.0 - (update - 1.0) / num_updates # liinearly decreases to 0
+            frac = 1.0 - (update - 1.0) / num_updates # linearly decreases to 0
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        for step in range(0, args.num_steps):
+        for step in range(0, args.num_steps): # each batch basically
             global_step += 1 * args.num_envs
-            obs[step] = next_obs
+            obs[step] = state
+
             dones[step] = next_done
 
             # ALGO LOGIC: action logic
             with torch.no_grad(): #because we ar ein rollout phase
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                action, logprob, _, value = agent.get_action_and_value(state)
                 values[step] = value.flatten()
 
             actions[step] = action
             logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, done, infos = envs.step(action.cpu().numpy().reshape(2,3))
-            reward = cust_rewards(agent,next_obs,float(infos["success"]),global_step)
-            done = np.array(done) #?????
-            rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
+            next_obs, reward_, done, infos = envs.step(action.cpu().numpy().reshape(2,3))
 
-            print(f"global_step{global_step}: reward {rewards[step]}")
+            reward = cust_rewards(agent,next_obs,float(infos["success"]),global_step)
+            # custom_reward_function(self.base_env,state, action,next_state, absorbing)?????
+
+            next_done = np.array(done) 
+            rewards[step] = torch.tensor(reward).to(device).view(-1)
+
+            state = next_obs
+
+            # CONSTRAINTS ???
+            # Get the joint position and velocity from the observation
+            q = next_obs[env_info['joint_pos_ids']]
+            dq = next_obs[env_info['joint_vel_ids']]
+            dist_constr = env_info['constraints'].fun(q,dq)["joint_pos_constr"]
+            vel_constr = env_info['constraints'].fun(q,dq)["joint_vel_constr"]
+            c_ee = env_info['constraints'].get('ee_constr').fun(q, dq)
+            jac_vel = env_info['constraints'].get('joint_vel_constr').jacobian(q, dq)
+
+            state, next_done = torch.Tensor(state).to(device), torch.Tensor(next_done).to(device)
+            
+
+            print(f"global_step{global_step}: reward {rewards[step], reward_}")
 
             #infos: 'constraints_value', 'jerk', 'success'
 
@@ -188,10 +210,11 @@ if __name__ == "__main__":
         # implementing GAE for PPO:
         # bootstrap value if not done
         with torch.no_grad():
-            next_value = agent.get_value(next_obs).reshape(1, -1)
+            next_value = agent.get_value(torch.Tensor(next_obs.reshape(1, -1)))
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
+                # print(t)
                 if t == args.num_steps - 1:
                     nextnonterminal = 1.0 - next_done
                     nextvalues = next_value
@@ -201,11 +224,11 @@ if __name__ == "__main__":
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]#TD-error
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam 
             returns = advantages + values
-
+         
         # flatten the batch
         b_obs = obs.reshape((-1,) + state_dim_)
         b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + state_dim_)
+        b_actions = actions.reshape((-1,) + action_dim_)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
@@ -217,10 +240,11 @@ if __name__ == "__main__":
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size): #each minibatch
                 end = start + args.minibatch_size
+                # print(start, end)
                 mb_inds = b_inds[start:end]
 
                 # forward pass on minibatch
-                newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
@@ -270,6 +294,7 @@ if __name__ == "__main__":
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
+    
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
@@ -281,7 +306,10 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-
-    envs.close()
+    
+    # current_date = datetime.now()
+    # formatted_date = current_date.strftime("%m-%d-%Y")
+    agent.save(f"./models/agent")
+    envs.stop()
     writer.close()
 # %%
