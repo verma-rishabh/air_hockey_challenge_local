@@ -19,7 +19,7 @@ class Actor(nn.Module):
 		self.l2 = nn.Linear(128, 128)
 		# self.l3 = nn.Linear(64, 64)
 		# self.l4 = nn.Linear(64, 32)
-		self.l5 = nn.Linear(128, 3)
+		self.l5 = nn.Linear(128, action_dim)
 		
 		self.max_action = max_action
 
@@ -53,12 +53,12 @@ class DDPG_agent(AgentBase):
 	def __init__(self, env_info,agent_id, discount=0.99, tau=0.005):
 		super(DDPG_agent, self).__init__(env_info, agent_id)
 		state_dim = 23
-		action_dim = 3
+		action_dim = 5
 		pos_max = env_info['robot']['joint_pos_limit'][1]
 		vel_max = env_info['robot']['joint_vel_limit'][1] 
 		max_ = np.stack([pos_max,vel_max],dtype=np.float32)
 		# max_action  = max_.reshape(14,)
-		max_action  = np.array([1.5,1.0,1.0],dtype=np.float32)
+		max_action  = np.array([1.5,1.0,2.0,2.0,2.0],dtype=np.float32)
 		max_action = torch.from_numpy(max_action).to(device)
 		self.max_action = max_action
 
