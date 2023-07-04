@@ -53,12 +53,12 @@ class DDPG_agent(AgentBase):
 	def __init__(self, env_info,agent_id, discount=0.99, tau=0.005):
 		super(DDPG_agent, self).__init__(env_info, agent_id)
 		state_dim = 23
-		action_dim = 5
+		action_dim = 4
 		pos_max = env_info['robot']['joint_pos_limit'][1]
 		vel_max = env_info['robot']['joint_vel_limit'][1] 
 		max_ = np.stack([pos_max,vel_max],dtype=np.float32)
 		# max_action  = max_.reshape(14,)
-		max_action  = np.array([1.5,0.5,3.0,3.0,3.0],dtype=np.float32)
+		max_action  = np.array([1.5,0.5,3.0,3.0],dtype=np.float32)
 		max_action = torch.from_numpy(max_action).to(device)
 		self.max_action = max_action
 

@@ -3,7 +3,7 @@ import torch
 
 
 class ReplayBuffer(object):
-	def __init__(self, state_dim, action_dim, max_size=int(1e6)):
+	def __init__(self, state_dim, action_dim, max_size=int(1e7)):
 		self.max_size = max_size
 		self.ptr = 0
 		self.size = 0
@@ -43,3 +43,13 @@ class ReplayBuffer(object):
 		np.savez(filename,state = self.state[:self.size,::],action = self.action[:self.size,::],\
 			next_state = self.next_state[:self.size,::],reward = self.reward[:self.size,::],not_done =self.not_done[:self.size,::])
 	
+	def load(self,filename):
+		x = np.load(filename)
+		size = x["state"].shape[0]
+		self.state[:size,:] = x["state"]
+		self.next_state[:size,:] = x["next_state"]
+		self.reward[:size,:] = x["reward"]
+		self.not_done[:size,:] = x["not_done"]
+		self.action[:size,:] = x["action"]
+		self.ptr = size
+		self.size = size

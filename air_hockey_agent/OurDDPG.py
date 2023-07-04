@@ -75,8 +75,7 @@ class DDPG_agent(AgentBase):
 
 	def draw_action(self, state):
 		state = torch.FloatTensor(state.reshape(1, -1)).to(device)
-		return self.actor(state).clamp(-self.max_action, self.max_action).cpu().data.numpy()\
-			.flatten().reshape(2,7)
+		return self.actor(state).clamp(-self.max_action, self.max_action).cpu().data.numpy().reshape(2,7)
 		# return self.actor(state).cpu().data.numpy().flatten()
 
 

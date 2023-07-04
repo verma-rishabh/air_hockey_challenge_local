@@ -3,7 +3,7 @@ import torch
 import os
 import utils
 from air_hockey_challenge.framework.air_hockey_challenge_wrapper import AirHockeyChallengeWrapper
-from air_hockey_agent.agent_builder_ddpg_exp2_hit import build_agent
+from baseline.baseline_agent.baseline_agent import build_agent
 from tensorboard_evaluation import *
 from omegaconf import OmegaConf
 from air_hockey_challenge.utils.kinematics import inverse_kinematics, jacobian
@@ -12,7 +12,7 @@ import copy
 class train(AirHockeyChallengeWrapper):
     def __init__(self, env=None, custom_reward_function=None, interpolation_order=3, **kwargs):
         # Load config file
-        self.conf = OmegaConf.load('train.yaml')
+        self.conf = OmegaConf.load('buffer_generate_full.yaml')
         env = self.conf.env
         # base env
         super().__init__(env, custom_reward_function, interpolation_order, **kwargs)
@@ -22,7 +22,7 @@ class train(AirHockeyChallengeWrapper):
         np.random.seed(self.conf.agent.seed)
         # env variables
         # self.action_shape = self.env_info["rl_info"].action_space.shape[0]
-        self.action_shape = 5
+        self.action_shape = 14
         self.observation_shape = self.env_info["rl_info"].observation_space.shape[0]
         # policy
         self.policy = build_agent(self.env_info)
@@ -30,8 +30,8 @@ class train(AirHockeyChallengeWrapper):
         pos_max = self.env_info['robot']['joint_pos_limit'][1]
         vel_max = self.env_info['robot']['joint_vel_limit'][1] 
         max_ = np.stack([pos_max,vel_max])
-        # self.max_action  = max_.reshape(14,)
-        self.max_action  = np.array([1.5,0.5,3.0,3.0,3.0])                          # from replay buffer
+        self.max_action  = max_.reshape(14,)
+        # self.max_action  = np.array([1.5,1.0,2.0,2.0,2.0])
         # make dirs 
         self.make_dir()
         tensorboard_dir=self.conf.agent.dump_dir + "/tensorboard/"
@@ -42,7 +42,7 @@ class train(AirHockeyChallengeWrapper):
             self.policy.load(self.conf.agent.dump_dir + f"/models/{policy_file}")
         
         self.replay_buffer = utils.ReplayBuffer(self.observation_shape, self.action_shape)
-        self.replay_buffer.load("/run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG_exp2/replay/data.npz")
+        self.replay_buffer.load("/run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG_v0/replay/data.npz")
 
     def make_dir(self):
         if not os.path.exists(self.conf.agent.dump_dir+"/results"):
@@ -92,11 +92,11 @@ class train(AirHockeyChallengeWrapper):
 
         else:
             if not has_hit:
-                ee_pos = self.base_env.get_ee()[0]
+                ee_pos = self.base_env.get_ee()[0][:2]
 
-                dist_ee_puck = np.linalg.norm(puck_pos - ee_pos)
+                dist_ee_puck = np.linalg.norm(puck_pos[:2] - ee_pos)
 
-                vec_ee_puck = (puck_pos[:2] - ee_pos[:2]) / dist_ee_puck
+                vec_ee_puck = (puck_pos[:2] - ee_pos) / dist_ee_puck
 
                 cos_ang_side = np.clip(vec_puck_side @ vec_ee_puck, 0, 1)
 
@@ -135,7 +135,6 @@ class train(AirHockeyChallengeWrapper):
 
     #     # loss[6] = reward
     #     return loss
-    
 
     # def cust_rewards(self,state,action,done):
     #     reward = 0.0
@@ -171,7 +170,7 @@ class train(AirHockeyChallengeWrapper):
 
 
 
-    def eval_policy(self,eval_episodes=10):
+    def eval_policy(self,eval_episodes=1):
         # eval_env = AirHockeyChallengeWrapper(env="3dof-hit", action_type="position-velocity", interpolation_order=3, debug=False)
         # eval_env.seed(seed + 100)
 
@@ -183,7 +182,7 @@ class train(AirHockeyChallengeWrapper):
             while not done and episode_timesteps<100:
                 # print("ep",episode_timesteps)
                 action = self.policy.draw_action(np.array(state))
-                next_state, reward, done, _ = self._step(state,action)
+                next_state,action, reward, done, _ = self._step(state,action)
                 # done_bool = float(_["success"]) 
                 # reward = cust_rewards(policy,state,done_bool,episode_timesteps)
                 print(reward)    # def _loss(self,next_state,action,reward):
@@ -215,26 +214,16 @@ class train(AirHockeyChallengeWrapper):
         return avg_reward
 
     def _step(self,state,action):
-        des_pos = np.array([action[0],action[1],0.1645])                                #'ee_desired_height': 0.1645
-        _,x = inverse_kinematics(self.policy.robot_model, self.policy.robot_data,des_pos)
-        des_v = action[2:]
-        jac = jacobian(self.policy.robot_model, self.policy.robot_data,self.policy.get_joint_pos(state))
-        inv_jac = np.linalg.pinv(jac)
-        joint_vel = des_v@inv_jac.T[:3,:]
-        # if (_):
-        action = np.zeros((2,7))
-        action[0,:] = x
-        action[1:] = joint_vel
+
         next_state, reward, done, info = self.step(action)
         next_state_copy = copy.deepcopy(next_state)
-        reward= self.reward_mushroomrl(next_state_copy, action, next_state)
-            # reward = self._loss(next_state,action,reward)
-        # else:
-        if (_):
-            reward -= 1.0
-            # next_state, done = self.reset(), False
-            # info = None
-        return next_state, reward, done, info
+        reward= self.reward_mushroomrl(state, action, next_state)
+        # reward = self._loss(next_state,action,reward)
+        # actions_ =  np.zeros((5))
+        # actions_[:2] = self.policy.get_ee_pose(next_state)[0][:2]
+        # jac = jacobian(self.policy.robot_model, self.policy.robot_data,self.policy.get_joint_pos(state))
+        # actions_[2:] = (jac@self.policy.get_joint_vel(next_state))[:3]
+        return next_state_copy, action, reward, done, info
 
     # def _monte_carlo(self,rewards):
     #     pre_value = 0
@@ -256,30 +245,29 @@ class train(AirHockeyChallengeWrapper):
             episode_timesteps += 1
             intermediate_t+=1
             # Select action randomly or according to policy
-            if t < self.conf.agent.start_timesteps:
-                # action = env.action_space.sample()
-                action = np.random.uniform(-self.max_action,self.max_action,(self.action_shape))
-            else:
-                action = self.policy.draw_action(np.array(state))
+            # if t < self.conf.agent.start_timesteps:
             
+            action = self.policy.draw_action(np.array(state))
+            # print(action)
             # Perform action
-            next_state, reward, done, _ = self._step(state,action) 
+            next_state, action, reward, done, _ = self._step(state,action) 
             # print(next_state[3])
             # self.render()
             # done_bool = float(done) if episode_timesteps < env._max_episode_steps else 0   ###MAX EPISODE STEPS
             done_bool = float(done) 
             # reward = cust_rewards(policy,state,done,episode_timesteps)
             # Store data in replay buffer
+            # action = np.array(([0,0,0,0,0]))
             self.replay_buffer.add(state, action.reshape(-1,), next_state, reward, done_bool)
             # print(intermediate_t,reward)
             state = next_state
             episode_reward += reward
 
             # Train agent after collecting sufficient data
-            if t >= self.conf.agent.start_timesteps:
-                critic_loss,actor_loss=self.policy.train(self.replay_buffer, self.conf.agent.batch_size)
+            # if t >= self.conf.agent.start_timesteps:
+            #     critic_loss,actor_loss=self.policy.train(self.replay_buffer, self.conf.agent.batch_size)
 
-            if done or intermediate_t > 100: 
+            if done or intermediate_t >300: 
                 # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
                 print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f}")
                 # Reset environment
@@ -295,8 +283,7 @@ class train(AirHockeyChallengeWrapper):
             # Evaluate episode
             if (t + 1) % self.conf.agent.eval_freq == 0:
                 evaluations.append(self.eval_policy())
-                np.save(self.conf.agent.dump_dir +f"/results/{self.conf.agent.file_name}", evaluations)
-                if 1: self.policy.save(self.conf.agent.dump_dir + f"/models/{self.conf.agent.file_name}")
+                self.replay_buffer.save(self.conf.agent.dump_dir + "/replay/data")
 
 x = train()
 x.train_model()

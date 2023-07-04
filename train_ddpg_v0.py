@@ -3,7 +3,7 @@ import torch
 import os
 import utils
 from air_hockey_challenge.framework.air_hockey_challenge_wrapper import AirHockeyChallengeWrapper
-from air_hockey_agent.agent_builder_ddpg_exp2_hit import build_agent
+from air_hockey_agent.agent_builder_ddpg_hit import build_agent
 from tensorboard_evaluation import *
 from omegaconf import OmegaConf
 from air_hockey_challenge.utils.kinematics import inverse_kinematics, jacobian
@@ -12,7 +12,7 @@ import copy
 class train(AirHockeyChallengeWrapper):
     def __init__(self, env=None, custom_reward_function=None, interpolation_order=3, **kwargs):
         # Load config file
-        self.conf = OmegaConf.load('train.yaml')
+        self.conf = OmegaConf.load('train_ddpg.yaml')
         env = self.conf.env
         # base env
         super().__init__(env, custom_reward_function, interpolation_order, **kwargs)
@@ -21,8 +21,8 @@ class train(AirHockeyChallengeWrapper):
         torch.manual_seed(self.conf.agent.seed)
         np.random.seed(self.conf.agent.seed)
         # env variables
-        # self.action_shape = self.env_info["rl_info"].action_space.shape[0]
-        self.action_shape = 5
+        self.action_shape = self.env_info["rl_info"].action_space.shape[0]
+        # self.action_shape = 5
         self.observation_shape = self.env_info["rl_info"].observation_space.shape[0]
         # policy
         self.policy = build_agent(self.env_info)
@@ -30,8 +30,8 @@ class train(AirHockeyChallengeWrapper):
         pos_max = self.env_info['robot']['joint_pos_limit'][1]
         vel_max = self.env_info['robot']['joint_vel_limit'][1] 
         max_ = np.stack([pos_max,vel_max])
-        # self.max_action  = max_.reshape(14,)
-        self.max_action  = np.array([1.5,0.5,3.0,3.0,3.0])                          # from replay buffer
+        self.max_action  = max_.reshape(14,)
+        # self.max_action  = np.array([1.5,0.5,3.0,3.0,3.0])                          # from replay buffer
         # make dirs 
         self.make_dir()
         tensorboard_dir=self.conf.agent.dump_dir + "/tensorboard/"
@@ -42,7 +42,7 @@ class train(AirHockeyChallengeWrapper):
             self.policy.load(self.conf.agent.dump_dir + f"/models/{policy_file}")
         
         self.replay_buffer = utils.ReplayBuffer(self.observation_shape, self.action_shape)
-        self.replay_buffer.load("/run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG_exp2/replay/data.npz")
+        # self.replay_buffer.load("/run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG_exp2/replay/data.npz")
 
     def make_dir(self):
         if not os.path.exists(self.conf.agent.dump_dir+"/results"):
@@ -215,25 +215,27 @@ class train(AirHockeyChallengeWrapper):
         return avg_reward
 
     def _step(self,state,action):
-        des_pos = np.array([action[0],action[1],0.1645])                                #'ee_desired_height': 0.1645
-        _,x = inverse_kinematics(self.policy.robot_model, self.policy.robot_data,des_pos)
-        des_v = action[2:]
-        jac = jacobian(self.policy.robot_model, self.policy.robot_data,self.policy.get_joint_pos(state))
-        inv_jac = np.linalg.pinv(jac)
-        joint_vel = des_v@inv_jac.T[:3,:]
+        # des_pos = np.array([action[0],action[1],0.1645])                                #'ee_desired_height': 0.1645
+        # _,x = inverse_kinematics(self.policy.robot_model, self.policy.robot_data,des_pos)
+        # des_v = action[2:]
+        # jac = jacobian(self.policy.robot_model, self.policy.robot_data,self.policy.get_joint_pos(state))
+        # inv_jac = np.linalg.pinv(jac)
+        # joint_vel = des_v@inv_jac.T[:3,:]
         # if (_):
-        action = np.zeros((2,7))
-        action[0,:] = x
-        action[1:] = joint_vel
+            # action = np.zeros((2,7))
+            # action[0,:] = x
+            # action[1:] = joint_vel
+            # next_state, reward, done, info = self.step(action)
+            # next_state_copy = copy.deepcopy(next_state)
+            # reward= self.reward_mushroomrl(next_state_copy, action, next_state)
+            # reward = self._loss(next_state,action,reward)
+        # else:
+            # reward -= 1.0
+            # next_state, done = self.reset(), False
+            # info = None
         next_state, reward, done, info = self.step(action)
         next_state_copy = copy.deepcopy(next_state)
         reward= self.reward_mushroomrl(next_state_copy, action, next_state)
-            # reward = self._loss(next_state,action,reward)
-        # else:
-        if (_):
-            reward -= 1.0
-            # next_state, done = self.reset(), False
-            # info = None
         return next_state, reward, done, info
 
     # def _monte_carlo(self,rewards):
@@ -258,7 +260,7 @@ class train(AirHockeyChallengeWrapper):
             # Select action randomly or according to policy
             if t < self.conf.agent.start_timesteps:
                 # action = env.action_space.sample()
-                action = np.random.uniform(-self.max_action,self.max_action,(self.action_shape))
+                action = np.random.uniform(-self.max_action,self.max_action,(self.action_shape)).reshape(2,7)
             else:
                 action = self.policy.draw_action(np.array(state))
             

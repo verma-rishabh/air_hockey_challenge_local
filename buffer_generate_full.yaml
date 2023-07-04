@@ -1,9 +1,9 @@
 env: 7dof-hit
 agent:
-    policy: exp-v03               
+    policy: exp-v02               
     seed: 0              
     start_timesteps: 200
-    eval_freq: 1000
+    eval_freq: 5000
     max_timesteps: 5e7
     expl_noise: 0.1            
     batch_size: 256
@@ -14,5 +14,5 @@ agent:
     policy_freq: 10       
     save_model: True     
     load_model: ""               
-    dump_dir : /run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG_exp3
+    dump_dir : /run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG_v0
     file_name : ${agent.policy}_${env}_${agent.seed}
