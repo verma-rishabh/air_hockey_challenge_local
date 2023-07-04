@@ -135,36 +135,36 @@ class train(AirHockeyChallengeWrapper):
     #     # loss[6] = reward
     #     return loss
 
-    def cust_rewards(self,state,action,done):
-        reward = 0.0
-        reset = 0
-        ee_pos = self.policy.get_ee_pose(state)[0]                               
-        puck_pos = self.policy.get_puck_pos(state)
-        dist = np.linalg.norm(ee_pos-puck_pos)
-        reward += np.exp(-5*dist) * (puck_pos[0]<=1.51)
-        # reward+=policy.get_puck_vel(state)[0]
-        # # reward -= episode_timesteps*0.01
-        # # if policy.get_puck_vel(state)[0]>0.06 and ((dist>0.16)):
-        # #     reward+=0
-        # reward += np.exp(puck_pos[0]-2.484)*policy.get_puck_vel(state)[0]*(policy.get_puck_vel(state)[0]>0)
-        # reward += np.exp(0.536-puck_pos[0])*policy.get_puck_vel(state)[0] *(policy.get_puck_vel(state)[0]<0)
-        des_z = self.env_info['robot']['ee_desired_height']
-        reward +=self.policy.get_puck_vel(state)[0]
-        reward+=done*100
-        tolerance = 0.02
+    # def cust_rewards(self,state,action,done):
+    #     reward = 0.0
+    #     reset = 0
+    #     ee_pos = self.policy.get_ee_pose(state)[0]                               
+    #     puck_pos = self.policy.get_puck_pos(state)
+    #     dist = np.linalg.norm(ee_pos-puck_pos)
+    #     reward += np.exp(-5*dist) * (puck_pos[0]<=1.51)
+    #     # reward+=policy.get_puck_vel(state)[0]
+    #     # # reward -= episode_timesteps*0.01
+    #     # # if policy.get_puck_vel(state)[0]>0.06 and ((dist>0.16)):
+    #     # #     reward+=0
+    #     # reward += np.exp(puck_pos[0]-2.484)*policy.get_puck_vel(state)[0]*(policy.get_puck_vel(state)[0]>0)
+    #     # reward += np.exp(0.536-puck_pos[0])*policy.get_puck_vel(state)[0] *(policy.get_puck_vel(state)[0]<0)
+    #     des_z = self.env_info['robot']['ee_desired_height']
+    #     reward +=self.policy.get_puck_vel(state)[0]
+    #     reward+=done*100
+    #     tolerance = 0.02
 
-        if abs(self.policy.get_ee_pose(state)[0][1])>0.519:         # should replace with env variables some day
-            reward -=1 
-        if (self.policy.get_ee_pose(state)[0][0])<0.536:
-            reward -=1 
-        if (self.policy.get_ee_pose(state)[0][2]-0.1)<des_z-tolerance*10 or (self.policy.get_ee_pose(state)[0][2]-0.1)>des_z+tolerance:
-            reward -=1
-            # reset = 1
-        reward -= 1e-3 * np.linalg.norm(action)
-        # print (reward)
+    #     if abs(self.policy.get_ee_pose(state)[0][1])>0.519:         # should replace with env variables some day
+    #         reward -=1 
+    #     if (self.policy.get_ee_pose(state)[0][0])<0.536:
+    #         reward -=1 
+    #     if (self.policy.get_ee_pose(state)[0][2]-0.1)<des_z-tolerance*10 or (self.policy.get_ee_pose(state)[0][2]-0.1)>des_z+tolerance:
+    #         reward -=1
+    #         # reset = 1
+    #     reward -= 1e-3 * np.linalg.norm(action)
+    #     # print (reward)
 
 
-        return reward,reset
+    #     return reward,reset
 
 
 
@@ -178,7 +178,7 @@ class train(AirHockeyChallengeWrapper):
             # print(_)
             state, done = self.reset(), False
             episode_timesteps=0
-            while not done and episode_timesteps<50:
+            while not done and episode_timesteps<100:
                 # print("ep",episode_timesteps)
                 action = self.policy.draw_action(np.array(state))
                 next_state, reward, done, _ = self._step(state,action)
@@ -215,7 +215,8 @@ class train(AirHockeyChallengeWrapper):
     def _step(self,state,action):
         des_pos = np.array([action[0],action[1],0.181])
         _,x = inverse_kinematics(self.policy.robot_model, self.policy.robot_data,des_pos)
-        if (_):
+        # if (_):
+        if (1):
             action = np.zeros((2,7))
             action[0,:] = x
             vel = (x - self.policy.get_joint_vel(state))/10 
@@ -259,7 +260,7 @@ class train(AirHockeyChallengeWrapper):
             # Perform action
             next_state, reward, done, _ = self._step(state,action) 
             # print(next_state[3])
-            self.render()
+            # self.render()
             # done_bool = float(done) if episode_timesteps < env._max_episode_steps else 0   ###MAX EPISODE STEPS
             done_bool = float(done) 
             # reward = cust_rewards(policy,state,done,episode_timesteps)
@@ -273,7 +274,7 @@ class train(AirHockeyChallengeWrapper):
             if t >= self.conf.agent.start_timesteps:
                 critic_loss,actor_loss=self.policy.train(self.replay_buffer, self.conf.agent.batch_size)
 
-            if done or intermediate_t > 200: 
+            if done or intermediate_t > 100: 
                 # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
                 print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f}")
                 # Reset environment
