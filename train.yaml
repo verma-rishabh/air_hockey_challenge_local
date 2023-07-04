@@ -1,6 +1,6 @@
 env: 7dof-hit
 agent:
-    policy: exp-v01               
+    policy: exp-v02               
     seed: 0              
     start_timesteps: 200
     eval_freq: 1000
