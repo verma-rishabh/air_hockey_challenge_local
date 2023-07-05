@@ -1,4 +1,4 @@
-from air_hockey_agent.OurDDPG import DDPG_agent 
+from air_hockey_agent.exp1 import exp1_agent 
 
 
 # def build_agent(env_info,agent_id=1):
@@ -27,7 +27,7 @@ def build_agent(env_info,agent_id=1):
     Returns:
          (AgentBase) An instance of the Agent
     """
-    agent = DDPG_agent(env_info,agent_id)
+    agent = exp1_agent(env_info,agent_id)
     # agent.load("models/default/DDPG-v3_air-hockey_0")
     return agent
 

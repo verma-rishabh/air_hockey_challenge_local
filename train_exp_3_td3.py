@@ -3,7 +3,7 @@ import torch
 import os
 import utils
 from air_hockey_challenge.framework.air_hockey_challenge_wrapper import AirHockeyChallengeWrapper
-from air_hockey_agent.agent_builder_ddpg_hit import build_agent
+from air_hockey_agent.agent_builder_td3_hit import build_agent
 from tensorboard_evaluation import *
 from omegaconf import OmegaConf
 from air_hockey_challenge.utils.kinematics import inverse_kinematics, jacobian
@@ -12,7 +12,7 @@ import copy
 class train(AirHockeyChallengeWrapper):
     def __init__(self, env=None, custom_reward_function=None, interpolation_order=3, **kwargs):
         # Load config file
-        self.conf = OmegaConf.load('train_ddpg.yaml')
+        self.conf = OmegaConf.load('train_td3.yaml')
         env = self.conf.env
         # base env
         super().__init__(env, custom_reward_function, interpolation_order, **kwargs)
@@ -21,8 +21,8 @@ class train(AirHockeyChallengeWrapper):
         torch.manual_seed(self.conf.agent.seed)
         np.random.seed(self.conf.agent.seed)
         # env variables
-        self.action_shape = self.env_info["rl_info"].action_space.shape[0]
-        # self.action_shape = 5
+        # self.action_shape = self.env_info["rl_info"].action_space.shape[0]
+        self.action_shape = 4
         self.observation_shape = self.env_info["rl_info"].observation_space.shape[0]
         # policy
         self.policy = build_agent(self.env_info)
@@ -30,8 +30,8 @@ class train(AirHockeyChallengeWrapper):
         pos_max = self.env_info['robot']['joint_pos_limit'][1]
         vel_max = self.env_info['robot']['joint_vel_limit'][1] 
         max_ = np.stack([pos_max,vel_max])
-        self.max_action  = max_.reshape(14,)
-        # self.max_action  = np.array([1.5,0.5,3.0,3.0,3.0])                          # from replay buffer
+        # self.max_action  = max_.reshape(14,)
+        self.max_action  = np.array([1.5,0.5,3.0,3.0])                          # from replay buffer
         # make dirs 
         self.make_dir()
         tensorboard_dir=self.conf.agent.dump_dir + "/tensorboard/"
@@ -40,9 +40,12 @@ class train(AirHockeyChallengeWrapper):
         if self.conf.agent.load_model!= "":
             policy_file = self.conf.agent.file_name if self.conf.agent.load_model == "default" else self.conf.agent .load_model
             self.policy.load(self.conf.agent.dump_dir + f"/models/{policy_file}")
-        
+
+        ################CAUTION######################################    
+        # self.policy.load(self.conf.agent.dump_dir + f"/models/offline")
+        ##################################################################
         self.replay_buffer = utils.ReplayBuffer(self.observation_shape, self.action_shape)
-        # self.replay_buffer.load("/run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG_exp2/replay/data.npz")
+        # self.replay_buffer.load("/run/media/luke/Data/uni/SS2023/DL Lab/Project/qualifying/DDPG_exp2/replay/data_4actions.npz")
 
     def make_dir(self):
         if not os.path.exists(self.conf.agent.dump_dir+"/results"):
@@ -52,8 +55,9 @@ class train(AirHockeyChallengeWrapper):
             os.makedirs(self.conf.agent.dump_dir+"/models")
     
     def reward_mushroomrl(self, state, action, next_state):
-
+        
         r = 0
+        reset = 0
         mod_next_state = next_state                            # changing frame of puck pos (wrt origin)
         mod_next_state[:3]  = mod_next_state[:3] - [1.51,0,0.1]
         absorbing = self.base_env.is_absorbing(mod_next_state)
@@ -114,89 +118,65 @@ class train(AirHockeyChallengeWrapper):
                     r_goal = 1. / (np.sqrt(2. * np.pi) * sig) * np.exp(-np.power((puck_pos[1] - 0) / sig, 2.) / 2)
 
                 r = 2 * r_hit + 10 * r_goal
-
+        # r-= np.exp(-8 * np.abs(puck_pos[2] - 0.1645))                      #'ee_desired_height': 0.1645
         r -= 1e-3 * np.linalg.norm(action)
-        
         des_z = self.env_info['robot']['ee_desired_height']
         tolerance = 0.02
-
-        # if abs(self.policy.get_ee_pose(next_state)[0][1])>0.519:         # should replace with env variables some day
-        #     r -=1 
-        # if (self.policy.get_ee_pose(next_state)[0][0])<0.536:
-        #     r -=1 
         # if (self.policy.get_ee_pose(next_state)[0][2]-0.1)<des_z-tolerance*10 or (self.policy.get_ee_pose(next_state)[0][2]-0.1)>des_z+tolerance*10:
-        #     r -=1
+            # r -=1
+            # reset = 1
         # print(r)
-        return r
+        return r,reset
+    # def _loss(self,next_state,action,reward):
+    #     desired_action = np.zeros((2,7))
+    #     des_z = self.env_info['robot']['ee_desired_height']
+    #     ee_pos = self.policy.get_ee_pose(next_state)[0] 
+    #     ee_pos[2] = des_z
+    #     # angles 
+    #     success,desired_angles = inverse_kinematics(self.policy.robot_model, self.policy.robot_data,ee_pos)
+    #     if success:                                         # if the confg. is possible
+    #         desired_action[0,:] = desired_angles  
+    #         loss = - np.square(np.subtract(action, desired_action)).reshape(-1,)/self.max_action    #because its a reward and hence should be -ve                
+    #     else:
+    #         loss = desired_action.reshape(-1,)
+    #         loss[:] = -1                                   # have to think about this
+    #     loss+=reward
 
-
-    def _loss(self,next_state,action,reward):
-        desired_action = np.zeros((2,7))
-        des_z = self.env_info['robot']['ee_desired_height']
-        ee_pos = self.policy.get_ee_pose(next_state)[0] 
-        ee_pos[2] = des_z
-        
-        # vel
-        jac = jacobian(self.policy.robot_model, self.policy.robot_data,self.policy.get_joint_pos(next_state))
-        ee_v = (jac@self.policy.get_joint_vel(next_state))[:3]
-        ee_v[2] = 0
-        inv_jac = np.linalg.pinv(jac)
-        desired_action[1,:] = ee_v@inv_jac.T[:3,:]
-        # angles 
-        success,desired_angles = inverse_kinematics(self.policy.robot_model, self.policy.robot_data,ee_pos)
-        if success:                                         # if the confg. is possible
-            desired_action[0,:] = desired_angles  
-            loss = np.square(np.subtract(action, desired_action)).reshape(-1,)    #because its a reward and hence should be -ve                
-            reward -= loss/np.sum(loss)
-            # loss = loss/np.mean(loss)
-            # print(loss)
-        else:
-            loss = desired_action.reshape(-1,)
-            loss[:] = 1
-            reward  -= loss                                  # have to think about this
-        # if (reward<0):
-        #     reward *= loss/np.sum(loss)
-        #     # print(reward.sum()) 
-        # else:
-        #     loss = 1/loss + 1e-9
-        #     reward *= loss/np.sum(loss)
-            # print(reward.sum())
-        # loss+=reward
-        # reward -= loss/np.sum(loss)
-        # loss[6] = reward
-        return reward
+    #     # loss[6] = reward
+    #     return loss
     
 
-    # def cust_rewards(self,state,action,done):
-    #     reward = 0.0
-    #     reset = 0
-    #     ee_pos = self.policy.get_ee_pose(state)[0]                               
-    #     puck_pos = self.policy.get_puck_pos(state)
-    #     dist = np.linalg.norm(ee_pos-puck_pos)
-    #     reward += np.exp(-5*dist) * (puck_pos[0]<=1.51)
-    #     # reward+=policy.get_puck_vel(state)[0]
-    #     # # reward -= episode_timesteps*0.01
-    #     # # if policy.get_puck_vel(state)[0]>0.06 and ((dist>0.16)):
-    #     # #     reward+=0
-    #     # reward += np.exp(puck_pos[0]-2.484)*policy.get_puck_vel(state)[0]*(policy.get_puck_vel(state)[0]>0)
-    #     # reward += np.exp(0.536-puck_pos[0])*policy.get_puck_vel(state)[0] *(policy.get_puck_vel(state)[0]<0)
-    #     des_z = self.env_info['robot']['ee_desired_height']
-    #     reward +=self.policy.get_puck_vel(state)[0]
-    #     reward+=done*100
-    #     tolerance = 0.02
+    def cust_rewards(self,next_state,action,done):
+        reward = 0.0
+        reset = 0
+        ee_pos = self.policy.get_ee_pose(next_state)[0]                               
+        puck_pos = self.policy.get_puck_pos(next_state)
+        dist = np.linalg.norm(ee_pos-puck_pos)
+        reward += np.exp(-5*dist) * (puck_pos[0]<=1.51)
+        # reward+=policy.get_puck_vel(state)[0]
+        # # reward -= episode_timesteps*0.01
+        # # if policy.get_puck_vel(state)[0]>0.06 and ((dist>0.16)):
+        # #     reward+=0
+        # reward += np.exp(puck_pos[0]-2.484)*policy.get_puck_vel(state)[0]*(policy.get_puck_vel(state)[0]>0)
+        # reward += np.exp(0.536-puck_pos[0])*policy.get_puck_vel(state)[0] *(policy.get_puck_vel(state)[0]<0)
+        des_z = self.env_info['robot']['ee_desired_height']
+        reward +=self.policy.get_puck_vel(next_state)[0]
+        reward+=done*100
 
-    #     if abs(self.policy.get_ee_pose(state)[0][1])>0.519:         # should replace with env variables some day
-    #         reward -=1 
-    #     if (self.policy.get_ee_pose(state)[0][0])<0.536:
-    #         reward -=1 
-    #     if (self.policy.get_ee_pose(state)[0][2]-0.1)<des_z-tolerance*10 or (self.policy.get_ee_pose(state)[0][2]-0.1)>des_z+tolerance:
-    #         reward -=1
-    #         # reset = 1
-    #     reward -= 1e-3 * np.linalg.norm(action)
-    #     # print (reward)
+        tolerance = 0.02
+
+        if abs(self.policy.get_ee_pose(next_state)[0][1])>0.519:         # should replace with env variables some day
+            reward -=1 
+        if (self.policy.get_ee_pose(next_state)[0][0])<0.536:
+            reward -=1 
+        if (self.policy.get_ee_pose(next_state)[0][2]-0.1)<des_z-tolerance*10 or (self.policy.get_ee_pose(next_state)[0][2]-0.1)>des_z+tolerance*10:
+            reward -=1
+            # reset = 1
+        reward -= 1e-3 * np.linalg.norm(action)
+        # print (reward)
 
 
-    #     return reward,reset
+        return reward,reset
 
 
 
@@ -216,7 +196,7 @@ class train(AirHockeyChallengeWrapper):
                 next_state, reward, done, _ = self._step(state,action)
                 # done_bool = float(_["success"]) 
                 # reward = cust_rewards(policy,state,done_bool,episode_timesteps)
-                print(reward.mean())    # def _loss(self,next_state,action,reward):
+                print(reward)    # def _loss(self,next_state,action,reward):
     #     desired_action = np.zeros((2,7))
     #     des_z = self.env_info['robot']['ee_desired_height']
     #     ee_pos = self.policy.get_ee_pose(next_state)[0] 
@@ -234,7 +214,7 @@ class train(AirHockeyChallengeWrapper):
     #     # loss[6] = reward
     #     return loss
                 self.render()
-                avg_reward += reward.mean()
+                avg_reward += reward
                 episode_timesteps+=1
                 state = next_state
 
@@ -245,30 +225,26 @@ class train(AirHockeyChallengeWrapper):
         return avg_reward
 
     def _step(self,state,action):
-        # des_pos = np.array([action[0],action[1],0.1645])                                #'ee_desired_height': 0.1645
-        # _,x = inverse_kinematics(self.policy.robot_model, self.policy.robot_data,des_pos)
-        # des_v = action[2:]
-        # jac = jacobian(self.policy.robot_model, self.policy.robot_data,self.policy.get_joint_pos(state))
-        # inv_jac = np.linalg.pinv(jac)
-        # joint_vel = des_v@inv_jac.T[:3,:]
+        des_pos = np.array([action[0],action[1],0.1645])                                #'ee_desired_height': 0.1645
+        _,x = inverse_kinematics(self.policy.robot_model, self.policy.robot_data,des_pos)
+        des_v = np.array([action[2],action[3],0.0])
+        jac = jacobian(self.policy.robot_model, self.policy.robot_data,self.policy.get_joint_pos(state))
+        inv_jac = np.linalg.pinv(jac)
+        joint_vel = des_v@inv_jac.T[:3,:]
         # if (_):
-            # action = np.zeros((2,7))
-            # action[0,:] = x
-            # action[1:] = joint_vel
-            # next_state, reward, done, info = self.step(action)
-            # next_state_copy = copy.deepcopy(next_state)
-            # reward= self.reward_mushroomrl(next_state_copy, action, next_state)
-            # reward = self._loss(next_state,action,reward)
-        # else:
-            # reward -= 1.0
-            # next_state, done = self.reset(), False
-            # info = None
+        action = np.zeros((2,7))
+        action[0,:] = x
+        action[1:] = joint_vel
         next_state, reward, done, info = self.step(action)
         next_state_copy = copy.deepcopy(next_state)
-        reward= self.reward_mushroomrl(next_state_copy, action, next_state)
-        next_state_copy = copy.deepcopy(next_state)
-        reward = self._loss(next_state_copy,action,reward)
-        # print(reward)
+        # reward,reset= self.reward_mushroomrl(next_state_copy, action, next_state)
+        reward,reset= self.cust_rewards(next_state_copy, action,done)    
+            # reward = self._loss(next_state,action,reward)
+        # else:
+        if (reset):
+            # reward -= 1.0
+            next_state, done = self.reset(), False
+            info = None
         return next_state, reward, done, info
 
     # def _monte_carlo(self,rewards):
@@ -291,28 +267,31 @@ class train(AirHockeyChallengeWrapper):
             episode_timesteps += 1
             intermediate_t+=1
             # Select action randomly or according to policy
-            if t < self.conf.agent.start_timesteps:
-                # action = env.action_space.sample()
-                action = np.random.uniform(-self.max_action,self.max_action,(self.action_shape)).reshape(2,7)
+            # if t < self.conf.agent.start_timesteps:
+            if 0:
+            # action = env.action_space.sample()
+                action = np.random.uniform(-self.max_action,self.max_action,(self.action_shape,))
             else:
-                action = self.policy.draw_action(np.array(state))
-            
+                action = (
+                    self.policy.draw_action(np.array(state))
+                    + np.random.normal(0, self.max_action * self.conf.agent.expl_noise, size=self.action_shape)
+                    ).clip(-self.max_action, self.max_action)
             # Perform action
             next_state, reward, done, _ = self._step(state,action) 
             # print(next_state[3])
-            # self.render()
+            self.render()
             # done_bool = float(done) if episode_timesteps < env._max_episode_steps else 0   ###MAX EPISODE STEPS
             done_bool = float(done) 
             # reward = cust_rewards(policy,state,done,episode_timesteps)
             # Store data in replay buffer
-            self.replay_buffer.add(state, action.reshape(-1,), next_state, reward.reshape(-1), done_bool)
+            self.replay_buffer.add(state, action.reshape(-1,), next_state, reward, done_bool)
             # print(intermediate_t,reward)
             state = next_state
-            episode_reward += reward.mean()
+            episode_reward += reward
 
-            # Train agent after collecting sufficient data
-            if t >= self.conf.agent.start_timesteps:
-                critic_loss,actor_loss=self.policy.train(self.replay_buffer, self.conf.agent.batch_size)
+            # # Train agent after collecting sufficient data
+            # if t >= self.conf.agent.start_timesteps:
+            #     critic_loss,actor_loss=self.policy.train(self.replay_buffer, self.conf.agent.batch_size)
 
             if done or intermediate_t > 100: 
                 # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True

@@ -39,7 +39,7 @@ class train(AirHockeyChallengeWrapper):
         # load model if defined
         if self.conf.agent.load_model!= "":
             policy_file = self.conf.agent.file_name if self.conf.agent.load_model == "default" else self.conf.agent .load_model
-            self.policy.load(self.conf.agent.dump_dir + f"/models/{policy_file}")
+            # self.policy.load(self.conf.agent.dump_dir + f"/models/{policy_file}")
 
         ################CAUTION######################################    
         # self.policy.load(self.conf.agent.dump_dir + f"/models/offline")
@@ -152,7 +152,7 @@ class train(AirHockeyChallengeWrapper):
         ee_pos = self.policy.get_ee_pose(next_state)[0]                               
         puck_pos = self.policy.get_puck_pos(next_state)
         dist = np.linalg.norm(ee_pos-puck_pos)
-        reward += np.exp(-5*dist)*10 * (puck_pos[0]<=1.51)
+        reward += np.exp(-5*dist) * (puck_pos[0]<=1.51)
         # reward+=policy.get_puck_vel(state)[0]
         # # reward -= episode_timesteps*0.01
         # # if policy.get_puck_vel(state)[0]>0.06 and ((dist>0.16)):
@@ -170,8 +170,8 @@ class train(AirHockeyChallengeWrapper):
         if (self.policy.get_ee_pose(next_state)[0][0])<0.536:
             reward -=1 
         if (self.policy.get_ee_pose(next_state)[0][2]-0.1)<des_z-tolerance*10 or (self.policy.get_ee_pose(next_state)[0][2]-0.1)>des_z+tolerance:
-            reward -=10
-            reset = 1
+            reward -=1
+            # reset = 1
         reward -= 1e-3 * np.linalg.norm(action)
         # print (reward)
 
@@ -237,8 +237,8 @@ class train(AirHockeyChallengeWrapper):
         action[1:] = joint_vel
         next_state, reward, done, info = self.step(action)
         next_state_copy = copy.deepcopy(next_state)
-        reward,reset= self.reward_mushroomrl(next_state_copy, action, next_state)
-        # reward,reset= self.cust_rewards(next_state_copy, action,done)    
+        # reward,reset= self.reward_mushroomrl(next_state_copy, action, next_state)
+        reward,reset= self.cust_rewards(next_state_copy, action,done)    
             # reward = self._loss(next_state,action,reward)
         # else:
         if (reset):
