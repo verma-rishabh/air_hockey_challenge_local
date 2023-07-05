@@ -150,7 +150,8 @@ class train(AirHockeyChallengeWrapper):
             episode_timesteps += 1
             intermediate_t+=1
             # Select action randomly or according to policy
-            if t < self.conf.agent.start_timesteps:
+            # if t < self.conf.agent.start_timesteps:
+            if 0:  
                 # action = env.action_space.sample()
                 action = np.random.uniform(-self.max_action,self.max_action,(14,)).reshape(2,7)
             else:
@@ -159,7 +160,7 @@ class train(AirHockeyChallengeWrapper):
             # Perform action
             next_state, reward, done, _ = self._step(state,action) 
             # print(next_state[3])
-            # env.render()
+            self.render()
             # done_bool = float(done) if episode_timesteps < env._max_episode_steps else 0   ###MAX EPISODE STEPS
             done_bool = float(done) 
             # reward = cust_rewards(policy,state,done,episode_timesteps)
@@ -170,8 +171,8 @@ class train(AirHockeyChallengeWrapper):
             episode_reward += reward.mean()
 
             # Train agent after collecting sufficient data
-            if t >= self.conf.agent.start_timesteps:
-                critic_loss,actor_loss=self.policy.train(self.replay_buffer, self.conf.agent.batch_size)
+            # if t >= self.conf.agent.start_timesteps:
+            #     critic_loss,actor_loss=self.policy.train(self.replay_buffer, self.conf.agent.batch_size)
 
             if done or intermediate_t > 50: 
                 # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True

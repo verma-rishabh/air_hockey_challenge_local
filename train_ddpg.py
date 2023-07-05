@@ -219,7 +219,8 @@ def main():
         episode_timesteps += 1
         intermediate_t+=1
         # Select action randomly or according to policy
-        if t < args.start_timesteps:
+        # if t < args.start_timesteps:
+        if 0:   
             # action = env.action_space.sample()
             action = np.random.uniform(-max_action,max_action,(14,)).reshape(2,7)
         else:
@@ -228,7 +229,7 @@ def main():
         # Perform action
         next_state, reward, done, _ = env.step(action) 
         # print(next_state[3])
-        # env.render()
+        env.render()
         # done_bool = float(done) if episode_timesteps < env._max_episode_steps else 0   ###MAX EPISODE STEPS
         done_bool = float(done) 
         reward = cust_rewards(policy,state,done,episode_timesteps)
@@ -239,8 +240,8 @@ def main():
         episode_reward += reward
 
         # Train agent after collecting sufficient data
-        if t >= args.start_timesteps:
-            critic_loss,actor_loss=policy.train(replay_buffer, args.batch_size)
+        # if t >= args.start_timesteps:
+        #     critic_loss,actor_loss=policy.train(replay_buffer, args.batch_size)
 
         if done or intermediate_t > 50: 
             # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
